@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   index,
+  integer,
   jsonb,
   pgEnum,
   pgTable,
@@ -26,6 +27,8 @@ export const providerRole = pgEnum("provider_role", [
   "developer",
   "viewer",
 ]);
+export const userStatus = pgEnum("user_status", ["active", "disabled"]);
+export const providerStatus = pgEnum("provider_status", ["active", "disabled"]);
 export const facetStatus = pgEnum("facet_status", [
   "draft",
   "published",
@@ -39,9 +42,13 @@ export const facetVersionStatus = pgEnum("facet_version_status", [
 export const users = pgTable(
   "users",
   {
-    id: uuid("id").defaultRandom().primaryKey(),
+    id: uuid("id")
+      .default(sql`uuidv7()`)
+      .primaryKey(),
     externalSubject: text("external_subject").notNull(),
+    email: text("email"),
     displayName: text("display_name"),
+    status: userStatus("status").notNull().default("active"),
     ...timestamps,
   },
   (table) => [
@@ -52,11 +59,17 @@ export const users = pgTable(
 export const providers = pgTable(
   "providers",
   {
-    id: uuid("id").defaultRandom().primaryKey(),
+    id: uuid("id")
+      .default(sql`uuidv7()`)
+      .primaryKey(),
     slug: text("slug").notNull(),
     name: text("name").notNull(),
     description: text("description").notNull().default(""),
+    websiteUrl: text("website_url"),
+    contact: text("contact"),
     walletAddress: text("wallet_address"),
+    status: providerStatus("status").notNull().default("active"),
+    version: integer("version").notNull().default(1),
     ...timestamps,
   },
   (table) => [uniqueIndex("providers_slug_uidx").on(table.slug)],
@@ -75,6 +88,9 @@ export const providerMemberships = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
   },
   (table) => [
     primaryKey({ columns: [table.providerId, table.userId] }),
@@ -85,7 +101,9 @@ export const providerMemberships = pgTable(
 export const facets = pgTable(
   "facets",
   {
-    id: uuid("id").defaultRandom().primaryKey(),
+    id: uuid("id")
+      .default(sql`uuidv7()`)
+      .primaryKey(),
     providerId: uuid("provider_id")
       .notNull()
       .references(() => providers.id, { onDelete: "restrict" }),
@@ -109,7 +127,9 @@ export const facets = pgTable(
 export const facetVersions = pgTable(
   "facet_versions",
   {
-    id: uuid("id").defaultRandom().primaryKey(),
+    id: uuid("id")
+      .default(sql`uuidv7()`)
+      .primaryKey(),
     facetId: uuid("facet_id")
       .notNull()
       .references(() => facets.id, { onDelete: "restrict" }),
@@ -138,7 +158,9 @@ export const facetVersions = pgTable(
 export const auditEvents = pgTable(
   "audit_events",
   {
-    id: uuid("id").defaultRandom().primaryKey(),
+    id: uuid("id")
+      .default(sql`uuidv7()`)
+      .primaryKey(),
     actorUserId: uuid("actor_user_id").references(() => users.id, {
       onDelete: "set null",
     }),
@@ -148,6 +170,7 @@ export const auditEvents = pgTable(
     eventType: text("event_type").notNull(),
     subjectType: text("subject_type").notNull(),
     subjectId: text("subject_id").notNull(),
+    requestId: text("request_id").notNull(),
     metadata: jsonb("metadata")
       .notNull()
       .default(sql`'{}'::jsonb`),
@@ -166,7 +189,10 @@ export const auditEvents = pgTable(
 export const outboxEvents = pgTable(
   "outbox_events",
   {
-    id: uuid("id").defaultRandom().primaryKey(),
+    id: uuid("id")
+      .default(sql`uuidv7()`)
+      .primaryKey(),
+    topic: text("topic").notNull(),
     aggregateType: text("aggregate_type").notNull(),
     aggregateId: text("aggregate_id").notNull(),
     eventType: text("event_type").notNull(),
@@ -175,6 +201,7 @@ export const outboxEvents = pgTable(
       .defaultNow()
       .notNull(),
     processedAt: timestamp("processed_at", { withTimezone: true }),
+    attemptCount: integer("attempt_count").notNull().default(0),
   },
   (table) => [
     index("outbox_events_unprocessed_idx").on(
