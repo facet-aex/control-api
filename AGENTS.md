@@ -1,6 +1,7 @@
 # FACET Control API instructions
 
 - This is a standalone repository. It must install, migrate, build and test without a parent folder or sibling checkout.
+- Use npm only. Commit this repository's `package-lock.json`; do not join a parent workspace.
 - Current scope is Phase 1 provider/catalog control plane only.
 - Clerk is an external session identity; FACET UUIDs and PostgreSQL memberships remain authoritative for domain authorization.
 - Store only `SecretRef`, never plaintext provider credentials.
