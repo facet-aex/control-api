@@ -38,6 +38,24 @@ export const facetVersionStatus = pgEnum("facet_version_status", [
   "draft",
   "published",
 ]);
+export const apiSourceKind = pgEnum("api_source_kind", [
+  "upload",
+  "paste",
+  "url",
+]);
+export const apiSourceStatus = pgEnum("api_source_status", [
+  "active",
+  "disabled",
+]);
+export const openApiImportStatus = pgEnum("openapi_import_status", [
+  "queued",
+  "fetching",
+  "parsing",
+  "normalizing",
+  "ready",
+  "failed",
+  "expired",
+]);
 
 export const users = pgTable(
   "users",
@@ -95,6 +113,129 @@ export const providerMemberships = pgTable(
   (table) => [
     primaryKey({ columns: [table.providerId, table.userId] }),
     index("provider_memberships_user_idx").on(table.userId),
+  ],
+);
+
+export const apiSources = pgTable(
+  "api_sources",
+  {
+    id: uuid("id")
+      .default(sql`uuidv7()`)
+      .primaryKey(),
+    providerId: uuid("provider_id")
+      .notNull()
+      .references(() => providers.id, { onDelete: "restrict" }),
+    name: text("name").notNull(),
+    sourceKind: apiSourceKind("source_kind").notNull(),
+    sourceUrl: text("source_url"),
+    status: apiSourceStatus("status").notNull().default("active"),
+    version: integer("version").notNull().default(1),
+    ...timestamps,
+  },
+  (table) => [
+    index("api_sources_provider_created_idx").on(
+      table.providerId,
+      table.createdAt,
+    ),
+  ],
+);
+
+export const apiSourceVersions = pgTable(
+  "api_source_versions",
+  {
+    id: uuid("id")
+      .default(sql`uuidv7()`)
+      .primaryKey(),
+    apiSourceId: uuid("api_source_id")
+      .notNull()
+      .references(() => apiSources.id, { onDelete: "restrict" }),
+    mediaType: text("media_type"),
+    objectKey: text("object_key").notNull(),
+    sha256: text("sha256").notNull(),
+    openApiVersion: text("openapi_version"),
+    resolvedDocumentHash: text("resolved_document_hash"),
+    createdBy: uuid("created_by")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex("api_source_versions_source_hash_uidx").on(
+      table.apiSourceId,
+      table.sha256,
+    ),
+    index("api_source_versions_hash_idx").on(table.sha256),
+  ],
+);
+
+export const openApiImportJobs = pgTable(
+  "openapi_import_jobs",
+  {
+    id: uuid("id")
+      .default(sql`uuidv7()`)
+      .primaryKey(),
+    providerId: uuid("provider_id")
+      .notNull()
+      .references(() => providers.id, { onDelete: "restrict" }),
+    apiSourceId: uuid("api_source_id")
+      .notNull()
+      .references(() => apiSources.id, { onDelete: "restrict" }),
+    sourceVersionId: uuid("source_version_id").references(
+      () => apiSourceVersions.id,
+      { onDelete: "restrict" },
+    ),
+    status: openApiImportStatus("status").notNull().default("queued"),
+    limitsSnapshot: jsonb("limits_snapshot").notNull(),
+    warnings: jsonb("warnings")
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    errorCode: text("error_code"),
+    errorSummary: text("error_summary"),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    createdBy: uuid("created_by")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index("openapi_import_jobs_provider_status_created_idx").on(
+      table.providerId,
+      table.status,
+      table.createdAt,
+    ),
+  ],
+);
+
+export const importOperationCandidates = pgTable(
+  "import_operation_candidates",
+  {
+    id: uuid("id")
+      .default(sql`uuidv7()`)
+      .primaryKey(),
+    importJobId: uuid("import_job_id")
+      .notNull()
+      .references(() => openApiImportJobs.id, { onDelete: "cascade" }),
+    jsonPointer: text("json_pointer").notNull(),
+    operationId: text("operation_id"),
+    method: text("method").notNull(),
+    pathTemplate: text("path_template").notNull(),
+    summary: text("summary"),
+    normalizedCandidate: jsonb("normalized_candidate").notNull(),
+    warnings: jsonb("warnings")
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+  },
+  (table) => [
+    uniqueIndex("import_operation_candidates_job_pointer_uidx").on(
+      table.importJobId,
+      table.jsonPointer,
+    ),
   ],
 );
 

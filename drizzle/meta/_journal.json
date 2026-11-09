@@ -15,6 +15,13 @@
       "when": 1794158445742,
       "tag": "0001_provider_identity_authorization",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794196393229,
+      "tag": "0002_openapi_ingestion",
+      "breakpoints": true
     }
   ]
 }
