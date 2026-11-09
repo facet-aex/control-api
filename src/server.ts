@@ -4,6 +4,8 @@ import { buildApp } from "./app.js";
 import { createAuthenticator } from "./auth/create-authenticator.js";
 import { readConfig } from "./config.js";
 import { createDatabase } from "./db/client.js";
+import { FacetDraftService } from "./facets/facet-draft-service.js";
+import { PostgresFacetDraftStore } from "./facets/postgres-facet-draft-store.js";
 import { ImportService } from "./imports/import-service.js";
 import { PostgresImportStore } from "./imports/postgres-import-store.js";
 import { PostgresProviderStore } from "./providers/postgres-provider-store.js";
@@ -36,6 +38,10 @@ const importService = new ImportService(
     timeoutMs: config.FACET_IMPORT_TIMEOUT_MS,
   },
 );
+const facetDraftService = new FacetDraftService(
+  new PostgresProviderStore(database.db),
+  new PostgresFacetDraftStore(database.db),
+);
 const app = await buildApp({
   checkDatabase: () => database.check(),
   environment: config.FACET_ENV,
@@ -48,6 +54,10 @@ const app = await buildApp({
     authenticator,
     service: importService,
     maxDocumentBytes: config.FACET_IMPORT_MAX_DOCUMENT_BYTES,
+  },
+  facetDraftRoutes: {
+    authenticator,
+    service: facetDraftService,
   },
 });
 

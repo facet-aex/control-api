@@ -4,6 +4,10 @@ import { ZodError } from "zod";
 
 import { AppError } from "./errors.js";
 import {
+  registerFacetDraftRoutes,
+  type FacetDraftRouteDependencies,
+} from "./facets/facet-draft-routes.js";
+import {
   registerImportRoutes,
   type ImportRouteDependencies,
 } from "./imports/import-routes.js";
@@ -18,6 +22,7 @@ export interface AppDependencies {
   webOrigin: string;
   providerRoutes?: ProviderRouteDependencies;
   importRoutes?: ImportRouteDependencies;
+  facetDraftRoutes?: FacetDraftRouteDependencies;
 }
 
 function hasErrorCode(error: unknown, code: string): boolean {
@@ -74,6 +79,9 @@ export async function buildApp(
   }
   if (dependencies.importRoutes) {
     await registerImportRoutes(app, dependencies.importRoutes);
+  }
+  if (dependencies.facetDraftRoutes) {
+    await registerFacetDraftRoutes(app, dependencies.facetDraftRoutes);
   }
 
   app.setErrorHandler((error, request, reply) => {

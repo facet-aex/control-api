@@ -14,12 +14,16 @@ import {
   apiSources,
   apiSourceVersions,
   auditEvents,
+  facets,
+  facetVersions,
   importOperationCandidates,
   openApiImportJobs,
   outboxEvents,
   providers,
   users,
 } from "../src/db/schema.js";
+import { FacetDraftService } from "../src/facets/facet-draft-service.js";
+import { PostgresFacetDraftStore } from "../src/facets/postgres-facet-draft-store.js";
 import { ImportService } from "../src/imports/import-service.js";
 import type { ImporterClient } from "../src/imports/importer-client.js";
 import { ImportWorker } from "../src/imports/import-worker.js";
@@ -65,6 +69,13 @@ const app = await buildApp({
     ),
     maxDocumentBytes: config.FACET_IMPORT_MAX_DOCUMENT_BYTES,
   },
+  facetDraftRoutes: {
+    authenticator: new LocalAuthenticator(),
+    service: new FacetDraftService(
+      providerStore,
+      new PostgresFacetDraftStore(database.db),
+    ),
+  },
 });
 
 const suffix = randomUUID();
@@ -73,6 +84,7 @@ const bob = `db-smoke-bob-${suffix}`;
 let providerId: string | undefined;
 const importJobIds: string[] = [];
 const apiSourceIds: string[] = [];
+const facetIds: string[] = [];
 
 function requireStatus(
   actual: number,
@@ -142,7 +154,7 @@ try {
   }
 
   const pasteContent =
-    "openapi: 3.1.0\ninfo:\n  title: Smoke API\n  version: 1.0.0\npaths:\n  /status:\n    get: {}\n";
+    "openapi: 3.1.0\ninfo:\n  title: Smoke API\n  version: 1.0.0\npaths:\n  /status:\n    get: {}\n  /health:\n    get: {}\n";
   const queuedImport = await app.inject({
     method: "POST",
     url: "/v1/openapi-imports",
@@ -206,18 +218,33 @@ try {
           title: source.kind === "url" ? "URL Smoke" : "Smoke API",
           version: "1",
         },
-        candidates: [
-          {
-            candidateId: source.kind === "url" ? "GET /token" : "GET /status",
-            jsonPointer:
-              source.kind === "url"
-                ? "#/paths/~1token/get"
-                : "#/paths/~1status/get",
-            method: "GET",
-            path: source.kind === "url" ? "/token" : "/status",
-            tags: [],
-          },
-        ],
+        candidates:
+          source.kind === "url"
+            ? [
+                {
+                  candidateId: "GET /token",
+                  jsonPointer: "#/paths/~1token/get",
+                  method: "GET" as const,
+                  path: "/token",
+                  tags: [],
+                },
+              ]
+            : [
+                {
+                  candidateId: "GET /status",
+                  jsonPointer: "#/paths/~1status/get",
+                  method: "GET" as const,
+                  path: "/status",
+                  tags: [],
+                },
+                {
+                  candidateId: "GET /health",
+                  jsonPointer: "#/paths/~1health/get",
+                  method: "GET" as const,
+                  path: "/health",
+                  tags: [],
+                },
+              ],
         warnings: [],
         source: {
           kind: source.kind,
@@ -272,6 +299,7 @@ try {
   ) {
     throw new Error("URL import smoke result did not persist its snapshot");
   }
+  let pasteOperations: Array<{ id: string }> = [];
   for (const importJobId of importJobIds) {
     const operations = await app.inject({
       method: "GET",
@@ -279,13 +307,59 @@ try {
       headers: { "x-facet-dev-user": bob },
     });
     requireStatus(operations.statusCode, 200, "read import operations");
-    if ((operations.json().operations as unknown[]).length !== 1) {
-      throw new Error("import smoke API did not return one candidate");
+    const importedOperations = operations.json().operations as Array<{
+      id: string;
+    }>;
+    const expectedCount = importJobId === queuedJob.id ? 2 : 1;
+    if (importedOperations.length !== expectedCount) {
+      throw new Error("import smoke API returned the wrong candidate count");
     }
+    if (importJobId === queuedJob.id) pasteOperations = importedOperations;
   }
 
-  console.log("FACET provider and OpenAPI worker database smoke test passed.");
+  const createdDrafts = await app.inject({
+    method: "POST",
+    url: "/v1/facets",
+    headers: { "x-facet-dev-user": bob },
+    payload: {
+      providerId,
+      importJobId: queuedJob.id,
+      selections: pasteOperations.map((operation, index) => ({
+        operationCandidateId: operation.id,
+        slug: `db-smoke-${index}-${suffix}`,
+        name: `Database smoke Facet ${index}`,
+        category: "testing",
+        tags: ["db-smoke"],
+        sideEffectClass: "READ_ONLY",
+      })),
+    },
+  });
+  requireStatus(createdDrafts.statusCode, 201, "create Facet drafts");
+  const createdFacets = createdDrafts.json().facets as Array<{
+    id: string;
+    draftVersion: { sourceVersionId: string };
+  }>;
+  if (
+    createdFacets.length !== 2 ||
+    createdFacets.some(
+      (facet) =>
+        facet.draftVersion.sourceVersionId !== queuedJob.sourceVersionId,
+    )
+  ) {
+    throw new Error("Facet draft smoke result lost import provenance");
+  }
+  facetIds.push(...createdFacets.map((facet) => facet.id));
+
+  console.log(
+    "FACET provider, OpenAPI worker, and Facet draft database smoke test passed.",
+  );
 } finally {
+  if (facetIds.length > 0) {
+    await database.db
+      .delete(facetVersions)
+      .where(inArray(facetVersions.facetId, facetIds));
+    await database.db.delete(facets).where(inArray(facets.id, facetIds));
+  }
   for (const importJobId of importJobIds) {
     await database.db
       .delete(importOperationCandidates)

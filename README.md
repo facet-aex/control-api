@@ -28,8 +28,8 @@ The worker polls the PostgreSQL transactional outbox, claims work with an expiri
 
 Replace the placeholder `DATABASE_URL` in the ignored `.env`. Liveness is available at `/health/live`; `/health/ready` additionally verifies PostgreSQL. Run `npm run verify` before committing.
 
-After migrations, `npm run db:smoke` verifies provider creation, membership mutation, final-owner protection, paste/URL import worker completion and candidate persistence against the configured local database. It uses an in-process importer client double, creates uniquely named synthetic records, uses a temporary object-store directory and removes everything before exiting.
+After migrations, `npm run db:smoke` verifies provider creation, membership mutation, final-owner protection, paste/URL import worker completion, candidate persistence and atomic Facet-draft creation against the configured local database. It uses an in-process importer client double, creates uniquely named synthetic records, uses a temporary object-store directory and removes everything before exiting.
 
 Phase 1 source snapshots use the local filesystem adapter rooted at `FACET_OBJECT_ROOT`. Objects are content-addressed, written with owner-only permissions and verified on read. This adapter is for the local demo only; object keys are internal identifiers, not public filesystem paths.
 
-Phase 1 local authentication uses `FACET_AUTH_MODE=local` and requires an `x-facet-dev-user` header on protected routes. This mode fails closed outside `FACET_ENV=local`. See `docs/authentication.md`, `docs/providers-api.md` and `docs/openapi-imports-api.md` for the current boundary and examples.
+Phase 1 local authentication uses `FACET_AUTH_MODE=local` and requires an `x-facet-dev-user` header on protected routes. This mode fails closed outside `FACET_ENV=local`. See `docs/authentication.md`, `docs/providers-api.md`, `docs/openapi-imports-api.md` and `docs/facet-drafts-api.md` for the current boundary and examples.

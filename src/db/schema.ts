@@ -33,10 +33,19 @@ export const facetStatus = pgEnum("facet_status", [
   "draft",
   "published",
   "disabled",
+  "deprecated",
 ]);
 export const facetVersionStatus = pgEnum("facet_version_status", [
   "draft",
+  "valid",
   "published",
+  "disabled",
+]);
+export const facetType = pgEnum("facet_type", ["external_http_api"]);
+export const facetVisibility = pgEnum("facet_visibility", [
+  "private",
+  "unlisted",
+  "public",
 ]);
 export const apiSourceKind = pgEnum("api_source_kind", [
   "upload",
@@ -248,6 +257,7 @@ export const facets = pgTable(
     providerId: uuid("provider_id")
       .notNull()
       .references(() => providers.id, { onDelete: "restrict" }),
+    type: facetType("type").notNull().default("external_http_api"),
     slug: text("slug").notNull(),
     name: text("name").notNull(),
     description: text("description").notNull().default(""),
@@ -257,6 +267,8 @@ export const facets = pgTable(
       .notNull()
       .default(sql`ARRAY[]::text[]`),
     status: facetStatus("status").notNull().default("draft"),
+    visibility: facetVisibility("visibility").notNull().default("private"),
+    version: integer("version").notNull().default(1),
     ...timestamps,
   },
   (table) => [
@@ -274,8 +286,20 @@ export const facetVersions = pgTable(
     facetId: uuid("facet_id")
       .notNull()
       .references(() => facets.id, { onDelete: "restrict" }),
-    version: text("version").notNull(),
+    displayVersion: text("version").notNull(),
     status: facetVersionStatus("status").notNull().default("draft"),
+    sourceVersionId: uuid("source_version_id")
+      .notNull()
+      .references(() => apiSourceVersions.id, { onDelete: "restrict" }),
+    sourceOperationPointer: text("source_operation_pointer").notNull(),
+    manifest: jsonb("manifest").notNull(),
+    contentHash: text("content_hash").notNull(),
+    validationResult: jsonb("validation_result")
+      .notNull()
+      .default(sql`'{"status":"pending","errors":[],"warnings":[]}'::jsonb`),
+    warningAcknowledgements: jsonb("warning_acknowledgements")
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     operation: jsonb("operation").notNull(),
     inputSchema: jsonb("input_schema").notNull(),
     outputSchema: jsonb("output_schema").notNull(),
@@ -285,12 +309,23 @@ export const facetVersions = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    version: integer("revision").notNull().default(1),
     publishedAt: timestamp("published_at", { withTimezone: true }),
+    publishedBy: uuid("published_by").references(() => users.id, {
+      onDelete: "restrict",
+    }),
   },
   (table) => [
     uniqueIndex("facet_versions_facet_version_uidx").on(
       table.facetId,
-      table.version,
+      table.displayVersion,
+    ),
+    uniqueIndex("facet_versions_facet_hash_uidx").on(
+      table.facetId,
+      table.contentHash,
     ),
     index("facet_versions_status_idx").on(table.status),
   ],
