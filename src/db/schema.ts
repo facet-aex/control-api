@@ -341,12 +341,20 @@ export const outboxEvents = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
+    availableAt: timestamp("available_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    claimToken: uuid("claim_token"),
     processedAt: timestamp("processed_at", { withTimezone: true }),
     attemptCount: integer("attempt_count").notNull().default(0),
+    lastError: text("last_error"),
   },
   (table) => [
     index("outbox_events_unprocessed_idx").on(
       table.processedAt,
+      table.availableAt,
+      table.leaseExpiresAt,
       table.createdAt,
     ),
   ],
