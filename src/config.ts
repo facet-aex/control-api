@@ -19,6 +19,43 @@ const environmentSchema = z.object({
   DATABASE_URL: z.string().url(),
   WEB_ORIGIN: z.string().url().default("http://localhost:3000"),
   FACET_OBJECT_ROOT: z.string().min(1).default(".facet-data/objects"),
+  FACET_IMPORT_MAX_DOCUMENT_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(10_485_760)
+    .default(5_242_880),
+  FACET_IMPORT_MAX_YAML_ALIASES: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .default(20),
+  FACET_IMPORT_MAX_REDIRECTS: z.coerce.number().int().min(0).max(10).default(3),
+  FACET_IMPORT_MAX_REFERENCE_DEPTH: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(64)
+    .default(16),
+  FACET_IMPORT_MAX_REFERENCE_COUNT: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(2_000)
+    .default(256),
+  FACET_IMPORT_MAX_OPERATION_COUNT: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(2_000)
+    .default(500),
+  FACET_IMPORT_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(60_000)
+    .default(10_000),
   FACET_AUTH_MODE: z.enum(["local", "clerk"]).default("local"),
   CLERK_SECRET_KEY: optionalNonEmptyString,
   CLERK_JWT_KEY: optionalNonEmptyString,

@@ -4,6 +4,10 @@ import { ZodError } from "zod";
 
 import { AppError } from "./errors.js";
 import {
+  registerImportRoutes,
+  type ImportRouteDependencies,
+} from "./imports/import-routes.js";
+import {
   registerProviderRoutes,
   type ProviderRouteDependencies,
 } from "./providers/provider-routes.js";
@@ -13,6 +17,7 @@ export interface AppDependencies {
   environment: "local" | "preview" | "production";
   webOrigin: string;
   providerRoutes?: ProviderRouteDependencies;
+  importRoutes?: ImportRouteDependencies;
 }
 
 export async function buildApp(
@@ -57,6 +62,9 @@ export async function buildApp(
 
   if (dependencies.providerRoutes) {
     await registerProviderRoutes(app, dependencies.providerRoutes);
+  }
+  if (dependencies.importRoutes) {
+    await registerImportRoutes(app, dependencies.importRoutes);
   }
 
   app.setErrorHandler((error, request, reply) => {

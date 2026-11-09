@@ -1,0 +1,102 @@
+import { Buffer } from "node:buffer";
+
+import type { AuthenticatedIdentity } from "../auth/types.js";
+import { AppError } from "../errors.js";
+import type { ProviderStore } from "../providers/provider-types.js";
+import { requireProviderPermission } from "../providers/provider-rbac.js";
+import type { ObjectStore } from "../storage/object-store.js";
+import type {
+  ImportJobRecord,
+  ImportLimitsSnapshot,
+  ImportSourceInput,
+  ImportStore,
+} from "./import-types.js";
+
+function toImportJob(job: ImportJobRecord) {
+  return {
+    id: job.id,
+    providerId: job.providerId,
+    apiSourceId: job.apiSourceId,
+    sourceVersionId: job.sourceVersionId,
+    status: job.status,
+    warnings: Array.isArray(job.warnings) ? job.warnings : [],
+    errorCode: job.errorCode,
+    errorSummary: job.errorSummary,
+    createdAt: job.createdAt.toISOString(),
+  };
+}
+
+export class ImportService {
+  constructor(
+    private readonly providers: ProviderStore,
+    private readonly imports: ImportStore,
+    private readonly objects: ObjectStore,
+    private readonly limits: ImportLimitsSnapshot,
+  ) {}
+
+  async create(
+    identity: AuthenticatedIdentity,
+    input: { providerId: string; name: string; source: ImportSourceInput },
+    requestId: string,
+  ) {
+    const actor = await this.providers.upsertUser(identity);
+    const role = await this.providers.getMembershipRole(
+      input.providerId,
+      actor.id,
+    );
+    requireProviderPermission(role, "facet:write");
+
+    if (
+      input.source.kind !== "url" &&
+      Buffer.byteLength(input.source.content, "utf8") >
+        this.limits.maxDocumentBytes
+    ) {
+      throw new AppError(
+        "IMPORT_TOO_LARGE",
+        "The OpenAPI source exceeds the configured byte limit.",
+        413,
+      );
+    }
+
+    const snapshot =
+      input.source.kind === "url"
+        ? undefined
+        : await this.objects.putImmutable(
+            Buffer.from(input.source.content, "utf8"),
+          );
+    const job = await this.imports.createImport({
+      actorUserId: actor.id,
+      providerId: input.providerId,
+      name: input.name,
+      source: input.source,
+      ...(snapshot
+        ? {
+            snapshot: {
+              objectKey: snapshot.objectKey,
+              sha256: snapshot.sha256,
+              mediaType:
+                input.source.kind === "url"
+                  ? null
+                  : (input.source.mediaType ?? null),
+            },
+          }
+        : {}),
+      limits: this.limits,
+      requestId,
+    });
+    return toImportJob(job);
+  }
+
+  async get(identity: AuthenticatedIdentity, jobId: string) {
+    const actor = await this.providers.upsertUser(identity);
+    const job = await this.imports.getImport(jobId);
+    if (!job)
+      throw new AppError("RESOURCE_NOT_FOUND", "Import job not found.", 404);
+    const role = await this.providers.getMembershipRole(
+      job.providerId,
+      actor.id,
+    );
+    requireProviderPermission(role, "provider:read-private");
+    return toImportJob(job);
+  }
+}
