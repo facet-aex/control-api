@@ -36,5 +36,6 @@ describe("authentication configuration", () => {
     expect(config.CLERK_SECRET_KEY).toBeUndefined();
     expect(config.CLERK_JWT_KEY).toBeUndefined();
     expect(config.CLERK_JWT_ISSUER).toBeUndefined();
+    expect(config.FACET_OBJECT_ROOT).toBe(".facet-data/objects");
   });
 });

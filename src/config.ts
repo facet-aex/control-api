@@ -18,6 +18,7 @@ const environmentSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65_535).default(4000),
   DATABASE_URL: z.string().url(),
   WEB_ORIGIN: z.string().url().default("http://localhost:3000"),
+  FACET_OBJECT_ROOT: z.string().min(1).default(".facet-data/objects"),
   FACET_AUTH_MODE: z.enum(["local", "clerk"]).default("local"),
   CLERK_SECRET_KEY: optionalNonEmptyString,
   CLERK_JWT_KEY: optionalNonEmptyString,

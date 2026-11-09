@@ -21,4 +21,6 @@ Replace the placeholder `DATABASE_URL` in the ignored `.env`. Liveness is availa
 
 After migrations, `npm run db:smoke` verifies provider creation, membership mutation and final-owner protection against the configured local database. It creates uniquely named synthetic records and removes them before exiting.
 
+Phase 1 source snapshots use the local filesystem adapter rooted at `FACET_OBJECT_ROOT`. Objects are content-addressed, written with owner-only permissions and verified on read. This adapter is for the local demo only; object keys are internal identifiers, not public filesystem paths.
+
 Phase 1 local authentication uses `FACET_AUTH_MODE=local` and requires an `x-facet-dev-user` header on protected routes. This mode fails closed outside `FACET_ENV=local`. See `docs/authentication.md` and `docs/providers-api.md` for the current boundary and examples.
