@@ -70,3 +70,5 @@ Each job stores a snapshot of the active limits so later worker behavior is repr
 - total fetch/import timeout: 10 seconds
 
 The control plane enforces the document byte limit for paste/upload and HTTPS for URL input before queueing. The isolated importer remains authoritative for network, parsing and reference limits.
+
+The JSON transport limit for `POST /v1/openapi-imports` is derived from the configured document limit as `2 × maxDocumentBytes + 64 KiB`. The additional allowance covers JSON escaping and command metadata without increasing the decoded OpenAPI document budget. Exceeding either the transport or decoded-document limit returns `413 IMPORT_TOO_LARGE`.

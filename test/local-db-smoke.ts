@@ -63,6 +63,7 @@ const app = await buildApp({
         timeoutMs: config.FACET_IMPORT_TIMEOUT_MS,
       },
     ),
+    maxDocumentBytes: config.FACET_IMPORT_MAX_DOCUMENT_BYTES,
   },
 });
 

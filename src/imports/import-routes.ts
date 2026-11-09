@@ -51,18 +51,31 @@ async function authenticate(
 export interface ImportRouteDependencies {
   authenticator: IdentityAuthenticator;
   service: ImportService;
+  maxDocumentBytes: number;
+}
+
+function importCommandBodyLimit(maxDocumentBytes: number): number {
+  return maxDocumentBytes * 2 + 64 * 1024;
 }
 
 export async function registerImportRoutes(
   app: FastifyInstance,
   dependencies: ImportRouteDependencies,
 ): Promise<void> {
-  app.post("/v1/openapi-imports", async (request, reply) => {
-    const identity = await authenticate(request, dependencies.authenticator);
-    const input = createImportSchema.parse(request.body);
-    const job = await dependencies.service.create(identity, input, request.id);
-    return reply.code(202).send({ job });
-  });
+  app.post(
+    "/v1/openapi-imports",
+    { bodyLimit: importCommandBodyLimit(dependencies.maxDocumentBytes) },
+    async (request, reply) => {
+      const identity = await authenticate(request, dependencies.authenticator);
+      const input = createImportSchema.parse(request.body);
+      const job = await dependencies.service.create(
+        identity,
+        input,
+        request.id,
+      );
+      return reply.code(202).send({ job });
+    },
+  );
 
   app.get("/v1/openapi-imports/:jobId", async (request) => {
     const identity = await authenticate(request, dependencies.authenticator);

@@ -117,6 +117,7 @@ beforeEach(async () => {
     importRoutes: {
       authenticator,
       service: new ImportService(providers, imports, objects, limits),
+      maxDocumentBytes: limits.maxDocumentBytes,
     },
   });
 });
@@ -221,6 +222,73 @@ describe("OpenAPI import commands", () => {
     expect(oversized.json()).toMatchObject({
       error: { code: "IMPORT_TOO_LARGE" },
     });
+  });
+
+  it("accepts a document above Fastify's default 1 MiB when it is within the configured import limit", async () => {
+    const providers = new InMemoryProviderStore();
+    const imports = new MemoryImportStore();
+    const largeObjects = new MemoryObjectStore();
+    const authenticator = new LocalAuthenticator();
+    const largeLimits = { ...limits, maxDocumentBytes: 1_100_000 };
+    const largeApp = await buildApp({
+      checkDatabase: async () => undefined,
+      environment: "local",
+      webOrigin: "http://localhost:3000",
+      providerRoutes: {
+        authenticator,
+        service: new ProviderService(providers),
+      },
+      importRoutes: {
+        authenticator,
+        service: new ImportService(
+          providers,
+          imports,
+          largeObjects,
+          largeLimits,
+        ),
+        maxDocumentBytes: largeLimits.maxDocumentBytes,
+      },
+    });
+
+    try {
+      const createdProvider = await largeApp.inject({
+        method: "POST",
+        url: "/v1/providers",
+        headers: { "x-facet-dev-user": "large-owner" },
+        payload: { slug: "large-import-provider", name: "Large Import" },
+      });
+      const providerId = createdProvider.json().provider.id as string;
+      const response = await largeApp.inject({
+        method: "POST",
+        url: "/v1/openapi-imports",
+        headers: { "x-facet-dev-user": "large-owner" },
+        payload: {
+          providerId,
+          name: "Large valid transport",
+          source: { kind: "paste", content: "x".repeat(1_060_000) },
+        },
+      });
+
+      expect(response.statusCode).toBe(202);
+      expect(largeObjects.objects.size).toBe(1);
+
+      const tooLargeResponse = await largeApp.inject({
+        method: "POST",
+        url: "/v1/openapi-imports",
+        headers: { "x-facet-dev-user": "large-owner" },
+        payload: {
+          providerId,
+          name: "Transport too large",
+          source: { kind: "paste", content: "x".repeat(2_300_000) },
+        },
+      });
+      expect(tooLargeResponse.statusCode).toBe(413);
+      expect(tooLargeResponse.json()).toMatchObject({
+        error: { code: "IMPORT_TOO_LARGE" },
+      });
+    } finally {
+      await largeApp.close();
+    }
   });
 
   it("does not expose a provider import job to another user", async () => {

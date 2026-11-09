@@ -20,6 +20,15 @@ export interface AppDependencies {
   importRoutes?: ImportRouteDependencies;
 }
 
+function hasErrorCode(error: unknown, code: string): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === code
+  );
+}
+
 export async function buildApp(
   dependencies: AppDependencies,
 ): Promise<FastifyInstance> {
@@ -92,6 +101,16 @@ export async function buildApp(
               message: issue.message,
             })),
           },
+        },
+      });
+    }
+
+    if (hasErrorCode(error, "FST_ERR_CTP_BODY_TOO_LARGE")) {
+      return reply.code(413).send({
+        error: {
+          code: "IMPORT_TOO_LARGE",
+          message: "The request body exceeds the configured limit.",
+          requestId: request.id,
         },
       });
     }

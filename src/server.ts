@@ -44,7 +44,11 @@ const app = await buildApp({
     authenticator,
     service: providerService,
   },
-  importRoutes: { authenticator, service: importService },
+  importRoutes: {
+    authenticator,
+    service: importService,
+    maxDocumentBytes: config.FACET_IMPORT_MAX_DOCUMENT_BYTES,
+  },
 });
 
 const shutdown = async (signal: string) => {
