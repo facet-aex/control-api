@@ -41,6 +41,18 @@ export interface ImportJobRecord {
   createdAt: Date;
 }
 
+export interface ImportOperationCandidateRecord {
+  id: string;
+  importJobId: string;
+  jsonPointer: string;
+  operationId: string | null;
+  method: string;
+  pathTemplate: string;
+  summary: string | null;
+  normalizedCandidate: unknown;
+  warnings: unknown;
+}
+
 export interface ImportStore {
   createImport(input: {
     actorUserId: string;
@@ -52,4 +64,5 @@ export interface ImportStore {
     requestId: string;
   }): Promise<ImportJobRecord>;
   getImport(jobId: string): Promise<ImportJobRecord | undefined>;
+  listCandidates(jobId: string): Promise<ImportOperationCandidateRecord[]>;
 }

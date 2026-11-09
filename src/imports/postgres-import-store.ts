@@ -5,6 +5,7 @@ import {
   apiSourceVersions,
   apiSources,
   auditEvents,
+  importOperationCandidates,
   openApiImportJobs,
   outboxEvents,
 } from "../db/schema.js";
@@ -102,5 +103,13 @@ export class PostgresImportStore implements ImportStore {
         .where(eq(openApiImportJobs.id, jobId))
         .limit(1)
     )[0];
+  }
+
+  async listCandidates(jobId: string) {
+    return this.database
+      .select()
+      .from(importOperationCandidates)
+      .where(eq(importOperationCandidates.importJobId, jobId))
+      .orderBy(importOperationCandidates.jsonPointer);
   }
 }

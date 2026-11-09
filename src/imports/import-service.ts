@@ -26,6 +26,21 @@ function toImportJob(job: ImportJobRecord) {
   };
 }
 
+function toOperationCandidate(
+  candidate: Awaited<ReturnType<ImportStore["listCandidates"]>>[number],
+) {
+  return {
+    id: candidate.id,
+    jsonPointer: candidate.jsonPointer,
+    operationId: candidate.operationId,
+    method: candidate.method,
+    path: candidate.pathTemplate,
+    summary: candidate.summary,
+    normalizedCandidate: candidate.normalizedCandidate,
+    warnings: Array.isArray(candidate.warnings) ? candidate.warnings : [],
+  };
+}
+
 export class ImportService {
   constructor(
     private readonly providers: ProviderStore,
@@ -98,5 +113,18 @@ export class ImportService {
     );
     requireProviderPermission(role, "provider:read-private");
     return toImportJob(job);
+  }
+
+  async listCandidates(identity: AuthenticatedIdentity, jobId: string) {
+    const actor = await this.providers.upsertUser(identity);
+    const job = await this.imports.getImport(jobId);
+    if (!job)
+      throw new AppError("RESOURCE_NOT_FOUND", "Import job not found.", 404);
+    const role = await this.providers.getMembershipRole(
+      job.providerId,
+      actor.id,
+    );
+    requireProviderPermission(role, "provider:read-private");
+    return (await this.imports.listCandidates(jobId)).map(toOperationCandidate);
   }
 }

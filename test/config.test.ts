@@ -40,5 +40,19 @@ describe("authentication configuration", () => {
     expect(config.FACET_IMPORT_MAX_DOCUMENT_BYTES).toBe(5_242_880);
     expect(config.FACET_IMPORT_MAX_REDIRECTS).toBe(3);
     expect(config.FACET_IMPORT_TIMEOUT_MS).toBe(10_000);
+    expect(config.FACET_IMPORTER_URL).toBe("http://127.0.0.1:4010");
+    expect(config.FACET_IMPORT_WORKER_LEASE_MS).toBe(30_000);
+  });
+
+  it("rejects plaintext importer traffic outside local loopback", () => {
+    expect(() =>
+      readConfig({
+        FACET_ENV: "preview",
+        FACET_AUTH_MODE: "clerk",
+        CLERK_SECRET_KEY: "test-key",
+        DATABASE_URL: "postgresql://user:password@localhost:5432/facet",
+        FACET_IMPORTER_URL: "http://importer.internal:4010",
+      }),
+    ).toThrow("FACET_IMPORTER_URL must use HTTPS");
   });
 });

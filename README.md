@@ -17,9 +17,18 @@ npm run db:migrate
 npm run dev
 ```
 
+OpenAPI ingestion uses three local processes. Start `openapi-importer` on its configured port first, then run the Control API and worker in separate terminals:
+
+```bash
+npm run dev
+npm run worker:dev
+```
+
+The worker polls the PostgreSQL transactional outbox, claims work with an expiring lease, calls the importer contract v0.4, verifies snapshot integrity and persists operation candidates. It retries transient network/5xx failures up to the configured limit; deterministic importer errors become terminal job failures.
+
 Replace the placeholder `DATABASE_URL` in the ignored `.env`. Liveness is available at `/health/live`; `/health/ready` additionally verifies PostgreSQL. Run `npm run verify` before committing.
 
-After migrations, `npm run db:smoke` verifies provider creation, membership mutation, final-owner protection and OpenAPI import persistence against the configured local database. It creates uniquely named synthetic records, uses a temporary object-store directory and removes both before exiting.
+After migrations, `npm run db:smoke` verifies provider creation, membership mutation, final-owner protection, paste/URL import worker completion and candidate persistence against the configured local database. It uses an in-process importer client double, creates uniquely named synthetic records, uses a temporary object-store directory and removes everything before exiting.
 
 Phase 1 source snapshots use the local filesystem adapter rooted at `FACET_OBJECT_ROOT`. Objects are content-addressed, written with owner-only permissions and verified on read. This adapter is for the local demo only; object keys are internal identifiers, not public filesystem paths.
 

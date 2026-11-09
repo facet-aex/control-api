@@ -62,6 +62,30 @@ class MemoryImportStore implements ImportStore {
   async getImport(jobId: string): Promise<ImportJobRecord | undefined> {
     return this.jobs.get(jobId);
   }
+
+  async listCandidates(jobId: string) {
+    return this.jobs.has(jobId)
+      ? [
+          {
+            id: randomUUID(),
+            importJobId: jobId,
+            jsonPointer: "#/paths/~1status/get",
+            operationId: "getStatus",
+            method: "GET",
+            pathTemplate: "/status",
+            summary: "Read status",
+            normalizedCandidate: {
+              candidateId: "getStatus",
+              jsonPointer: "#/paths/~1status/get",
+              method: "GET",
+              path: "/status",
+              tags: [],
+            },
+            warnings: [],
+          },
+        ]
+      : [];
+  }
 }
 
 const limits = {
@@ -219,6 +243,46 @@ describe("OpenAPI import commands", () => {
       headers: { "x-facet-dev-user": "mallory" },
     });
 
+    expect(denied.statusCode).toBe(403);
+  });
+
+  it("returns normalized operation candidates only to provider members", async () => {
+    const providerId = await createProvider();
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/openapi-imports",
+      headers: { "x-facet-dev-user": "alice" },
+      payload: {
+        providerId,
+        name: "Candidate import",
+        source: { kind: "paste", content: "openapi: 3.1.0" },
+      },
+    });
+    const jobId = created.json().job.id as string;
+
+    const allowed = await app.inject({
+      method: "GET",
+      url: `/v1/openapi-imports/${jobId}/operations`,
+      headers: { "x-facet-dev-user": "alice" },
+    });
+    expect(allowed.statusCode).toBe(200);
+    expect(allowed.json()).toMatchObject({
+      operations: [
+        {
+          jsonPointer: "#/paths/~1status/get",
+          method: "GET",
+          path: "/status",
+        },
+      ],
+    });
+    expect(JSON.stringify(allowed.json())).not.toContain("objectKey");
+    expect(JSON.stringify(allowed.json())).not.toContain("sourceUrl");
+
+    const denied = await app.inject({
+      method: "GET",
+      url: `/v1/openapi-imports/${jobId}/operations`,
+      headers: { "x-facet-dev-user": "mallory" },
+    });
     expect(denied.statusCode).toBe(403);
   });
 });

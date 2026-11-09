@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +21,9 @@ import {
   users,
 } from "../src/db/schema.js";
 import { ImportService } from "../src/imports/import-service.js";
+import type { ImporterClient } from "../src/imports/importer-client.js";
+import { ImportWorker } from "../src/imports/import-worker.js";
+import { PostgresImportWorkerStore } from "../src/imports/postgres-import-worker-store.js";
 import { PostgresImportStore } from "../src/imports/postgres-import-store.js";
 import { PostgresProviderStore } from "../src/providers/postgres-provider-store.js";
 import { ProviderService } from "../src/providers/provider-service.js";
@@ -67,8 +70,8 @@ const suffix = randomUUID();
 const alice = `db-smoke-alice-${suffix}`;
 const bob = `db-smoke-bob-${suffix}`;
 let providerId: string | undefined;
-let importJobId: string | undefined;
-let apiSourceId: string | undefined;
+const importJobIds: string[] = [];
+const apiSourceIds: string[] = [];
 
 function requireStatus(
   actual: number,
@@ -137,6 +140,8 @@ try {
     throw new Error("membership smoke result did not retain exactly one owner");
   }
 
+  const pasteContent =
+    "openapi: 3.1.0\ninfo:\n  title: Smoke API\n  version: 1.0.0\npaths:\n  /status:\n    get: {}\n";
   const queuedImport = await app.inject({
     method: "POST",
     url: "/v1/openapi-imports",
@@ -147,8 +152,7 @@ try {
       source: {
         kind: "paste",
         mediaType: "application/yaml",
-        content:
-          "openapi: 3.1.0\ninfo:\n  title: Smoke API\n  version: 1.0.0\npaths: {}\n",
+        content: pasteContent,
       },
     },
   });
@@ -159,25 +163,129 @@ try {
     sourceVersionId: string | null;
     status: string;
   };
-  importJobId = queuedJob.id;
-  apiSourceId = queuedJob.apiSourceId;
+  importJobIds.push(queuedJob.id);
+  apiSourceIds.push(queuedJob.apiSourceId);
   if (queuedJob.status !== "queued" || !queuedJob.sourceVersionId) {
     throw new Error("import smoke result did not create a source snapshot");
   }
 
+  const queuedUrlImport = await app.inject({
+    method: "POST",
+    url: "/v1/openapi-imports",
+    headers: { "x-facet-dev-user": bob },
+    payload: {
+      providerId,
+      name: "FACET database smoke URL OpenAPI",
+      source: {
+        kind: "url",
+        url: "https://api.example.com/openapi.json",
+      },
+    },
+  });
+  requireStatus(queuedUrlImport.statusCode, 202, "queue URL OpenAPI import");
+  const queuedUrlJob = queuedUrlImport.json().job as {
+    id: string;
+    apiSourceId: string;
+    sourceVersionId: string | null;
+  };
+  importJobIds.push(queuedUrlJob.id);
+  apiSourceIds.push(queuedUrlJob.apiSourceId);
+  if (queuedUrlJob.sourceVersionId !== null) {
+    throw new Error("URL import claimed a snapshot before worker fetch");
+  }
+
+  const urlContent =
+    '{"openapi":"3.0.3","info":{"title":"URL Smoke","version":"1"},"paths":{"/token":{"get":{}}}}';
+  const importer: ImporterClient = {
+    parse: async (source, limits) => {
+      const sourceContent = source.kind === "url" ? urlContent : source.content;
+      return {
+        document: {
+          openapi: source.kind === "url" ? "3.0.3" : "3.1.0",
+          title: source.kind === "url" ? "URL Smoke" : "Smoke API",
+          version: "1",
+        },
+        candidates: [
+          {
+            candidateId: source.kind === "url" ? "GET /token" : "GET /status",
+            jsonPointer:
+              source.kind === "url"
+                ? "#/paths/~1token/get"
+                : "#/paths/~1status/get",
+            method: "GET",
+            path: source.kind === "url" ? "/token" : "/status",
+            tags: [],
+          },
+        ],
+        warnings: [],
+        source: {
+          kind: source.kind,
+          sha256: createHash("sha256").update(sourceContent).digest("hex"),
+          byteLength: Buffer.byteLength(sourceContent),
+          ...(source.kind === "url"
+            ? {
+                mediaType: "application/json",
+                finalUrl: source.url,
+                redirectCount: 0,
+              }
+            : {}),
+        },
+        snapshot: { content: sourceContent },
+        limits,
+      };
+    },
+  };
+  const worker = new ImportWorker(
+    new PostgresImportWorkerStore(database.pool),
+    new LocalObjectStore(objectRoot),
+    importer,
+    { leaseMs: 30_000, maxAttempts: 3, retryBaseMs: 100 },
+  );
+  for (let index = 0; index < importJobIds.length; index += 1) {
+    if ((await worker.runOnce()) !== "completed") {
+      throw new Error("database smoke worker did not complete an import");
+    }
+  }
+
   const fetchedImport = await app.inject({
     method: "GET",
-    url: `/v1/openapi-imports/${importJobId}`,
+    url: `/v1/openapi-imports/${queuedJob.id}`,
     headers: { "x-facet-dev-user": bob },
   });
   requireStatus(fetchedImport.statusCode, 200, "read OpenAPI import");
-  if (fetchedImport.json().job.id !== importJobId) {
-    throw new Error("import smoke result returned a different job");
+  if (
+    fetchedImport.json().job.id !== queuedJob.id ||
+    fetchedImport.json().job.status !== "ready"
+  ) {
+    throw new Error("paste import smoke result was not ready");
+  }
+  const fetchedUrlImport = await app.inject({
+    method: "GET",
+    url: `/v1/openapi-imports/${queuedUrlJob.id}`,
+    headers: { "x-facet-dev-user": bob },
+  });
+  requireStatus(fetchedUrlImport.statusCode, 200, "read URL OpenAPI import");
+  if (
+    fetchedUrlImport.json().job.status !== "ready" ||
+    !fetchedUrlImport.json().job.sourceVersionId
+  ) {
+    throw new Error("URL import smoke result did not persist its snapshot");
+  }
+  for (const importJobId of importJobIds) {
+    const operations = await app.inject({
+      method: "GET",
+      url: `/v1/openapi-imports/${importJobId}/operations`,
+      headers: { "x-facet-dev-user": bob },
+    });
+    requireStatus(operations.statusCode, 200, "read import operations");
+    if ((operations.json().operations as unknown[]).length !== 1) {
+      throw new Error("import smoke API did not return one candidate");
+    }
   }
 
-  console.log("FACET provider and OpenAPI import database smoke test passed.");
+  console.log("FACET provider and OpenAPI worker database smoke test passed.");
 } finally {
-  if (importJobId) {
+  for (const importJobId of importJobIds) {
     await database.db
       .delete(importOperationCandidates)
       .where(eq(importOperationCandidates.importJobId, importJobId));
@@ -188,7 +296,7 @@ try {
       .delete(openApiImportJobs)
       .where(eq(openApiImportJobs.id, importJobId));
   }
-  if (apiSourceId) {
+  for (const apiSourceId of apiSourceIds) {
     await database.db
       .delete(apiSourceVersions)
       .where(eq(apiSourceVersions.apiSourceId, apiSourceId));

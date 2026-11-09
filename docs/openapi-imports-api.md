@@ -6,7 +6,7 @@ The Phase 1 control plane accepts an OpenAPI source, creates immutable source pr
 
 - `paste` and `upload` snapshot the submitted UTF-8 content into the configured immutable object store before the database transaction.
 - `upload` currently uses JSON `content` as the local-demo fallback. Multipart and streaming upload are not implemented yet.
-- `url` accepts HTTPS only and stores the protected source URL. The worker will fetch and snapshot it through the isolated importer transport; until that worker exists, the job remains `queued` and `sourceVersionId` is `null`.
+- `url` accepts HTTPS only and stores the protected source URL. The worker fetches and snapshots it through the isolated importer transport. Before processing, the job is `queued` and `sourceVersionId` is `null`; a successful worker completion populates the source version.
 - Source URLs, object keys and source payloads are private provider data. API responses expose identifiers and status, not filesystem paths or source URLs.
 - Creating an import requires `facet:write`. Reading it requires `provider:read-private` for the owning provider.
 
@@ -43,13 +43,19 @@ URL example:
 }
 ```
 
-The command returns `202 Accepted` with a `queued` job. For paste/upload, `sourceVersionId` is populated. For URL input, it remains `null` until the worker fetches and snapshots the document.
+The command returns `202 Accepted` with a `queued` job. For paste/upload, `sourceVersionId` is populated immediately. For URL input, it remains `null` until the worker fetches and snapshots the document. Run `npm run worker:dev` alongside the Control API; the isolated `openapi-importer` process must be reachable at `FACET_IMPORTER_URL`.
 
 ## Read an import
 
 `GET /v1/openapi-imports/:jobId`
 
 The response includes job identifiers, status, warnings and a safe error summary. It does not return the source body or source URL.
+
+## Read operation candidates
+
+`GET /v1/openapi-imports/:jobId/operations`
+
+Provider members may retrieve normalized operation candidates after the worker persists them. The response includes stable JSON Pointers, HTTP method/path, optional operation metadata, normalized candidate data and warnings. It never includes the protected source URL, raw snapshot, object key or filesystem path.
 
 ## Limits
 

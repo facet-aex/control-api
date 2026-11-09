@@ -69,4 +69,12 @@ export async function registerImportRoutes(
     const jobId = idSchema.parse((request.params as { jobId?: unknown }).jobId);
     return { job: await dependencies.service.get(identity, jobId) };
   });
+
+  app.get("/v1/openapi-imports/:jobId/operations", async (request) => {
+    const identity = await authenticate(request, dependencies.authenticator);
+    const jobId = idSchema.parse((request.params as { jobId?: unknown }).jobId);
+    return {
+      operations: await dependencies.service.listCandidates(identity, jobId),
+    };
+  });
 }

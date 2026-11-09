@@ -56,6 +56,31 @@ const environmentSchema = z.object({
     .min(1_000)
     .max(60_000)
     .default(10_000),
+  FACET_IMPORTER_URL: z.string().url().default("http://127.0.0.1:4010"),
+  FACET_IMPORT_WORKER_POLL_MS: z.coerce
+    .number()
+    .int()
+    .min(50)
+    .max(60_000)
+    .default(500),
+  FACET_IMPORT_WORKER_LEASE_MS: z.coerce
+    .number()
+    .int()
+    .min(5_000)
+    .max(300_000)
+    .default(30_000),
+  FACET_IMPORT_WORKER_MAX_ATTEMPTS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(10)
+    .default(3),
+  FACET_IMPORT_WORKER_RETRY_BASE_MS: z.coerce
+    .number()
+    .int()
+    .min(100)
+    .max(60_000)
+    .default(1_000),
   FACET_AUTH_MODE: z.enum(["local", "clerk"]).default("local"),
   CLERK_SECRET_KEY: optionalNonEmptyString,
   CLERK_JWT_KEY: optionalNonEmptyString,
@@ -81,6 +106,17 @@ export function readConfig(
     !config.CLERK_JWT_KEY
   ) {
     throw new Error("Clerk auth requires CLERK_SECRET_KEY or CLERK_JWT_KEY");
+  }
+
+  const importerUrl = new URL(config.FACET_IMPORTER_URL);
+  const isLocalLoopback =
+    config.FACET_ENV === "local" &&
+    importerUrl.protocol === "http:" &&
+    ["127.0.0.1", "localhost", "[::1]"].includes(importerUrl.hostname);
+  if (importerUrl.protocol !== "https:" && !isLocalLoopback) {
+    throw new Error(
+      "FACET_IMPORTER_URL must use HTTPS outside the local loopback environment",
+    );
   }
 
   return config;
