@@ -41,6 +41,16 @@ async function createProvider(user = "alice") {
   });
 }
 
+async function getCurrentUser(user: string): Promise<{ id: string }> {
+  const response = await app.inject({
+    method: "GET",
+    url: "/v1/me",
+    headers: { "x-facet-dev-user": user },
+  });
+  expect(response.statusCode).toBe(200);
+  return response.json().user as { id: string };
+}
+
 describe("provider routes", () => {
   it("creates a provider and owner membership atomically", async () => {
     const response = await createProvider();
@@ -141,6 +151,127 @@ describe("provider routes", () => {
     expect(response.statusCode).toBe(401);
     expect(response.json()).toMatchObject({
       error: { code: "AUTHENTICATION_REQUIRED" },
+    });
+  });
+
+  it("lets owners add, change, list, and remove members with audit events", async () => {
+    const created = await createProvider();
+    const providerId = created.json().provider.id as string;
+    const bob = await getCurrentUser("bob");
+
+    const added = await app.inject({
+      method: "PUT",
+      url: `/v1/providers/${providerId}/members/${bob.id}`,
+      headers: { "x-facet-dev-user": "alice" },
+      payload: { role: "developer" },
+    });
+    expect(added.statusCode).toBe(200);
+    expect(added.json()).toMatchObject({
+      membership: { user: { id: bob.id }, role: "developer" },
+    });
+
+    const changed = await app.inject({
+      method: "PUT",
+      url: `/v1/providers/${providerId}/members/${bob.id}`,
+      headers: { "x-facet-dev-user": "alice" },
+      payload: { role: "viewer" },
+    });
+    expect(changed.statusCode).toBe(200);
+    expect(changed.json()).toMatchObject({ membership: { role: "viewer" } });
+
+    const listed = await app.inject({
+      method: "GET",
+      url: `/v1/providers/${providerId}/members`,
+      headers: { "x-facet-dev-user": "bob" },
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json().memberships).toHaveLength(2);
+    expect(listed.body).not.toContain("externalSubject");
+    expect(listed.body).not.toContain("local:bob");
+
+    const removed = await app.inject({
+      method: "DELETE",
+      url: `/v1/providers/${providerId}/members/${bob.id}`,
+      headers: { "x-facet-dev-user": "alice" },
+    });
+    expect(removed.statusCode).toBe(204);
+    expect(store.auditEvents.map((event) => event.eventType)).toEqual([
+      "provider.created",
+      "provider.membership.created",
+      "provider.membership.role_changed",
+      "provider.membership.removed",
+    ]);
+  });
+
+  it("rejects removal or demotion of the final owner", async () => {
+    const created = await createProvider();
+    const providerId = created.json().provider.id as string;
+    const alice = await getCurrentUser("alice");
+
+    const demotion = await app.inject({
+      method: "PUT",
+      url: `/v1/providers/${providerId}/members/${alice.id}`,
+      headers: { "x-facet-dev-user": "alice" },
+      payload: { role: "admin" },
+    });
+    expect(demotion.statusCode).toBe(409);
+    expect(demotion.json()).toMatchObject({
+      error: { code: "FINAL_OWNER_REQUIRED" },
+    });
+
+    const removal = await app.inject({
+      method: "DELETE",
+      url: `/v1/providers/${providerId}/members/${alice.id}`,
+      headers: { "x-facet-dev-user": "alice" },
+    });
+    expect(removal.statusCode).toBe(409);
+    expect(removal.json()).toMatchObject({
+      error: { code: "FINAL_OWNER_REQUIRED" },
+    });
+  });
+
+  it("does not let admins grant or mutate owner membership", async () => {
+    const created = await createProvider();
+    const providerId = created.json().provider.id as string;
+    const bob = await getCurrentUser("bob");
+    const carol = await getCurrentUser("carol");
+
+    await app.inject({
+      method: "PUT",
+      url: `/v1/providers/${providerId}/members/${bob.id}`,
+      headers: { "x-facet-dev-user": "alice" },
+      payload: { role: "admin" },
+    });
+
+    const grantOwner = await app.inject({
+      method: "PUT",
+      url: `/v1/providers/${providerId}/members/${carol.id}`,
+      headers: { "x-facet-dev-user": "bob" },
+      payload: { role: "owner" },
+    });
+    expect(grantOwner.statusCode).toBe(403);
+
+    const alice = await getCurrentUser("alice");
+    const removeOwner = await app.inject({
+      method: "DELETE",
+      url: `/v1/providers/${providerId}/members/${alice.id}`,
+      headers: { "x-facet-dev-user": "bob" },
+    });
+    expect(removeOwner.statusCode).toBe(403);
+  });
+
+  it("denies cross-provider membership access", async () => {
+    const created = await createProvider();
+    const providerId = created.json().provider.id as string;
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/providers/${providerId}/members`,
+      headers: { "x-facet-dev-user": "mallory" },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({
+      error: { code: "AUTHORIZATION_DENIED" },
     });
   });
 });

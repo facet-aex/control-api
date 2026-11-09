@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { AppError } from "../src/errors.js";
 import type {
+  ProviderMembershipRecord,
   ProviderRecord,
   ProviderRole,
   ProviderStore,
@@ -17,6 +18,7 @@ export class InMemoryProviderStore implements ProviderStore {
   private readonly memberships = new Map<string, ProviderRole>();
   private readonly providers = new Map<string, ProviderRecord>();
   private readonly users = new Map<string, UserRecord>();
+  private readonly usersById = new Map<string, UserRecord>();
 
   async upsertUser(
     identity: Parameters<ProviderStore["upsertUser"]>[0],
@@ -31,6 +33,7 @@ export class InMemoryProviderStore implements ProviderStore {
       status: "active",
     };
     this.users.set(identity.subject, user);
+    this.usersById.set(user.id, user);
     return user;
   }
 
@@ -81,6 +84,147 @@ export class InMemoryProviderStore implements ProviderStore {
     userId: string,
   ): Promise<ProviderRole | undefined> {
     return this.memberships.get(`${providerId}:${userId}`);
+  }
+
+  async listMemberships(
+    providerId: string,
+  ): Promise<ProviderMembershipRecord[]> {
+    const result: ProviderMembershipRecord[] = [];
+    for (const [key, role] of this.memberships) {
+      const [membershipProviderId, userId] = key.split(":");
+      if (membershipProviderId !== providerId || !userId) continue;
+      const user = this.usersById.get(userId);
+      if (!user) continue;
+      result.push({
+        user: {
+          id: user.id,
+          email: user.email,
+          displayName: user.displayName,
+        },
+        role,
+        createdAt: new Date("2026-11-09T00:00:00.000Z"),
+        updatedAt: new Date("2026-11-09T00:00:00.000Z"),
+      });
+    }
+    return result.sort((left, right) =>
+      left.user.id.localeCompare(right.user.id),
+    );
+  }
+
+  async setMembership(
+    input: Parameters<ProviderStore["setMembership"]>[0],
+  ): Promise<ProviderMembershipRecord> {
+    if (!this.providers.has(input.providerId)) {
+      throw new AppError("RESOURCE_NOT_FOUND", "Provider not found.", 404);
+    }
+    const actorRole = this.memberships.get(
+      `${input.providerId}:${input.actorUserId}`,
+    );
+    if (actorRole !== "owner" && actorRole !== "admin") {
+      throw new AppError(
+        "AUTHORIZATION_DENIED",
+        "The authenticated user is not authorized for this provider.",
+        403,
+      );
+    }
+    const targetUser = this.usersById.get(input.targetUserId);
+    if (!targetUser) {
+      throw new AppError("RESOURCE_NOT_FOUND", "User not found.", 404);
+    }
+    const key = `${input.providerId}:${input.targetUserId}`;
+    const existingRole = this.memberships.get(key);
+    if (
+      actorRole !== "owner" &&
+      (input.role === "owner" || existingRole === "owner")
+    ) {
+      throw new AppError(
+        "AUTHORIZATION_DENIED",
+        "Only an owner can add or change an owner membership.",
+        403,
+      );
+    }
+    if (existingRole === "owner" && input.role !== "owner") {
+      const ownerCount = [...this.memberships.entries()].filter(
+        ([membershipKey, role]) =>
+          membershipKey.startsWith(`${input.providerId}:`) && role === "owner",
+      ).length;
+      if (ownerCount === 1) {
+        throw new AppError(
+          "FINAL_OWNER_REQUIRED",
+          "A provider must retain at least one owner.",
+          409,
+        );
+      }
+    }
+    if (existingRole !== input.role) {
+      this.memberships.set(key, input.role);
+      this.auditEvents.push({
+        eventType: existingRole
+          ? "provider.membership.role_changed"
+          : "provider.membership.created",
+        providerId: input.providerId,
+        requestId: input.requestId,
+      });
+    }
+    return {
+      user: {
+        id: targetUser.id,
+        email: targetUser.email,
+        displayName: targetUser.displayName,
+      },
+      role: input.role,
+      createdAt: new Date("2026-11-09T00:00:00.000Z"),
+      updatedAt: new Date("2026-11-09T00:01:00.000Z"),
+    };
+  }
+
+  async removeMembership(
+    input: Parameters<ProviderStore["removeMembership"]>[0],
+  ): Promise<void> {
+    if (!this.providers.has(input.providerId)) {
+      throw new AppError("RESOURCE_NOT_FOUND", "Provider not found.", 404);
+    }
+    const actorRole = this.memberships.get(
+      `${input.providerId}:${input.actorUserId}`,
+    );
+    if (actorRole !== "owner" && actorRole !== "admin") {
+      throw new AppError(
+        "AUTHORIZATION_DENIED",
+        "The authenticated user is not authorized for this provider.",
+        403,
+      );
+    }
+    const key = `${input.providerId}:${input.targetUserId}`;
+    const targetRole = this.memberships.get(key);
+    if (!targetRole) {
+      throw new AppError("RESOURCE_NOT_FOUND", "Membership not found.", 404);
+    }
+    if (actorRole !== "owner" && targetRole === "owner") {
+      throw new AppError(
+        "AUTHORIZATION_DENIED",
+        "Only an owner can remove an owner membership.",
+        403,
+      );
+    }
+    if (targetRole === "owner") {
+      const ownerCount = [...this.memberships.entries()].filter(
+        ([membershipKey, role]) =>
+          membershipKey.startsWith(`${input.providerId}:`) && role === "owner",
+      ).length;
+      if (ownerCount === 1) {
+        throw new AppError(
+          "FINAL_OWNER_REQUIRED",
+          "A provider must retain at least one owner.",
+          409,
+        );
+      }
+    }
+    this.memberships.delete(key);
+    this.auditEvents.push({
+      eventType: "provider.membership.removed",
+      providerId: input.providerId,
+      requestId: input.requestId,
+    });
   }
 
   async listProvidersForUser(

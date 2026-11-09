@@ -19,4 +19,6 @@ npm run dev
 
 Replace the placeholder `DATABASE_URL` in the ignored `.env`. Liveness is available at `/health/live`; `/health/ready` additionally verifies PostgreSQL. Run `npm run verify` before committing.
 
+After migrations, `npm run db:smoke` verifies provider creation, membership mutation and final-owner protection against the configured local database. It creates uniquely named synthetic records and removes them before exiting.
+
 Phase 1 local authentication uses `FACET_AUTH_MODE=local` and requires an `x-facet-dev-user` header on protected routes. This mode fails closed outside `FACET_ENV=local`. See `docs/authentication.md` and `docs/providers-api.md` for the current boundary and examples.

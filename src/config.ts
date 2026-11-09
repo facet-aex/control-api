@@ -1,5 +1,14 @@
 import { z } from "zod";
 
+const optionalNonEmptyString = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  z.string().min(1).optional(),
+);
+const optionalUrl = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  z.string().url().optional(),
+);
+
 const environmentSchema = z.object({
   NODE_ENV: z
     .enum(["development", "test", "production"])
@@ -10,9 +19,9 @@ const environmentSchema = z.object({
   DATABASE_URL: z.string().url(),
   WEB_ORIGIN: z.string().url().default("http://localhost:3000"),
   FACET_AUTH_MODE: z.enum(["local", "clerk"]).default("local"),
-  CLERK_SECRET_KEY: z.string().min(1).optional(),
-  CLERK_JWT_KEY: z.string().min(1).optional(),
-  CLERK_JWT_ISSUER: z.string().url().optional(),
+  CLERK_SECRET_KEY: optionalNonEmptyString,
+  CLERK_JWT_KEY: optionalNonEmptyString,
+  CLERK_JWT_ISSUER: optionalUrl,
 });
 
 export type AppConfig = z.infer<typeof environmentSchema>;

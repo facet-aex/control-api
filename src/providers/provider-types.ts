@@ -16,6 +16,19 @@ export interface UserRecord {
   status: "active" | "disabled";
 }
 
+export interface CurrentUser {
+  id: string;
+  email: string | null;
+  displayName: string | null;
+}
+
+export interface ProviderMembershipRecord {
+  user: CurrentUser;
+  role: ProviderRole;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface ProviderRecord {
   id: string;
   slug: string;
@@ -60,6 +73,20 @@ export interface ProviderStore {
     providerId: string,
     userId: string,
   ): Promise<ProviderRole | undefined>;
+  listMemberships(providerId: string): Promise<ProviderMembershipRecord[]>;
+  setMembership(input: {
+    actorUserId: string;
+    providerId: string;
+    targetUserId: string;
+    role: ProviderRole;
+    requestId: string;
+  }): Promise<ProviderMembershipRecord>;
+  removeMembership(input: {
+    actorUserId: string;
+    providerId: string;
+    targetUserId: string;
+    requestId: string;
+  }): Promise<void>;
   listProvidersForUser(
     userId: string,
   ): Promise<Array<{ provider: ProviderRecord; role: ProviderRole }>>;
@@ -82,6 +109,13 @@ export interface PublicProvider {
   walletAddress: string | null;
   status: "active" | "disabled";
   version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProviderMembership {
+  user: CurrentUser;
+  role: ProviderRole;
   createdAt: string;
   updatedAt: string;
 }

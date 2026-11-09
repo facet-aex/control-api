@@ -3,11 +3,36 @@ import type { AuthenticatedIdentity } from "../auth/types.js";
 import { requireProviderPermission } from "./provider-rbac.js";
 import type {
   CreateProviderInput,
+  CurrentUser,
+  ProviderMembership,
   ProviderRecord,
+  ProviderRole,
   ProviderStore,
   PublicProvider,
   UpdateProviderInput,
 } from "./provider-types.js";
+
+function toCurrentUser(user: {
+  id: string;
+  email: string | null;
+  displayName: string | null;
+}): CurrentUser {
+  return { id: user.id, email: user.email, displayName: user.displayName };
+}
+
+function toProviderMembership(membership: {
+  user: CurrentUser;
+  role: ProviderRole;
+  createdAt: Date;
+  updatedAt: Date;
+}): ProviderMembership {
+  return {
+    user: membership.user,
+    role: membership.role,
+    createdAt: membership.createdAt.toISOString(),
+    updatedAt: membership.updatedAt.toISOString(),
+  };
+}
 
 function toPublicProvider(provider: ProviderRecord): PublicProvider {
   return {
@@ -27,6 +52,10 @@ function toPublicProvider(provider: ProviderRecord): PublicProvider {
 
 export class ProviderService {
   constructor(private readonly store: ProviderStore) {}
+
+  async getCurrentUser(identity: AuthenticatedIdentity): Promise<CurrentUser> {
+    return toCurrentUser(await this.store.upsertUser(identity));
+  }
 
   async create(
     identity: AuthenticatedIdentity,
@@ -57,6 +86,52 @@ export class ProviderService {
       provider: toPublicProvider(provider),
       role,
     }));
+  }
+
+  async listMembers(
+    identity: AuthenticatedIdentity,
+    providerId: string,
+  ): Promise<ProviderMembership[]> {
+    const actor = await this.store.upsertUser(identity);
+    const role = await this.store.getMembershipRole(providerId, actor.id);
+    requireProviderPermission(role, "provider:read-private");
+    return (await this.store.listMemberships(providerId)).map(
+      toProviderMembership,
+    );
+  }
+
+  async setMember(
+    identity: AuthenticatedIdentity,
+    providerId: string,
+    targetUserId: string,
+    role: ProviderRole,
+    requestId: string,
+  ): Promise<ProviderMembership> {
+    const actor = await this.store.upsertUser(identity);
+    return toProviderMembership(
+      await this.store.setMembership({
+        actorUserId: actor.id,
+        providerId,
+        targetUserId,
+        role,
+        requestId,
+      }),
+    );
+  }
+
+  async removeMember(
+    identity: AuthenticatedIdentity,
+    providerId: string,
+    targetUserId: string,
+    requestId: string,
+  ): Promise<void> {
+    const actor = await this.store.upsertUser(identity);
+    await this.store.removeMembership({
+      actorUserId: actor.id,
+      providerId,
+      targetUserId,
+      requestId,
+    });
   }
 
   async update(

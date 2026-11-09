@@ -26,7 +26,7 @@ export async function buildApp(
   await app.register(cors, {
     origin: dependencies.webOrigin,
     credentials: true,
-    methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   });
 
   app.get("/health/live", async () => ({

@@ -22,4 +22,19 @@ describe("authentication configuration", () => {
       }),
     ).toThrow("Clerk auth requires");
   });
+
+  it("treats empty optional Clerk variables as unset", () => {
+    const config = readConfig({
+      FACET_ENV: "local",
+      FACET_AUTH_MODE: "local",
+      DATABASE_URL: "postgresql://facet:facet@localhost:5432/facet",
+      CLERK_SECRET_KEY: "",
+      CLERK_JWT_KEY: "",
+      CLERK_JWT_ISSUER: "",
+    });
+
+    expect(config.CLERK_SECRET_KEY).toBeUndefined();
+    expect(config.CLERK_JWT_KEY).toBeUndefined();
+    expect(config.CLERK_JWT_ISSUER).toBeUndefined();
+  });
 });

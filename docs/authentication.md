@@ -31,4 +31,4 @@ The Clerk subject is mapped to a FACET `users` row. Provider membership in Postg
 | Create/edit Facet drafts | yes | yes | yes | no |
 | Manage memberships | yes | yes | no | no |
 
-Membership mutation endpoints and the final-owner invariant are implemented in the next Slice 1 increment. Cross-provider access is denied before repository mutation.
+Membership mutations are serialized by locking the Provider row. Only an owner can add, demote or remove another owner, and the final owner cannot be demoted or removed. Cross-provider access is denied before mutation.
