@@ -24,7 +24,7 @@ npm run dev
 npm run worker:dev
 ```
 
-The worker polls the PostgreSQL transactional outbox, claims work with an expiring lease, calls the importer contract v0.4, verifies snapshot integrity and persists operation candidates. It retries transient network/5xx failures up to the configured limit; deterministic importer errors become terminal job failures.
+The worker polls the PostgreSQL transactional outbox, claims work with an expiring lease, calls importer contract v0.6, verifies snapshot integrity and persists normalized operation candidates plus per-operation warnings. It retries transient network/5xx failures up to the configured limit; deterministic importer errors become terminal job failures.
 
 Replace the placeholder `DATABASE_URL` in the ignored `.env`. Liveness is available at `/health/live`; `/health/ready` additionally verifies PostgreSQL. Run `npm run verify` before committing.
 

@@ -20,32 +20,61 @@ const limitsSchema = z.object({
   timeoutMs: z.number().int().positive(),
 });
 
+const jsonSchema = z.union([z.boolean(), z.record(z.string(), z.unknown())]);
+const authSchemeSchema = z.object({
+  schemeName: z.string().min(1),
+  kind: z.enum(["API_KEY_HEADER", "API_KEY_QUERY", "BEARER", "UNSUPPORTED"]),
+  parameterName: z.string().min(1).optional(),
+  sourceType: z.string().min(1).optional(),
+});
+const normalizedOperationSchema = z.object({
+  description: z.string().optional(),
+  inputSchema: jsonSchema,
+  outputSchema: jsonSchema,
+  errorSchema: jsonSchema,
+  servers: z.array(
+    z.object({
+      url: z.string().min(1).max(2_048),
+      description: z.string().optional(),
+      variables: z.record(z.string(), z.string()),
+    }),
+  ),
+  authAlternatives: z.array(z.object({ schemes: z.array(authSchemeSchema) })),
+  responseMetadata: z.object({
+    successStatusCode: z.string().min(1).optional(),
+    successMediaType: z.string().min(1).optional(),
+    errorStatusCodes: z.array(z.string().min(1)),
+  }),
+});
+
+export const importerOperationCandidateSchema = z.object({
+  candidateId: z.string().min(1),
+  jsonPointer: z.string().startsWith("#/paths/"),
+  method: z.enum([
+    "GET",
+    "PUT",
+    "POST",
+    "DELETE",
+    "OPTIONS",
+    "HEAD",
+    "PATCH",
+    "TRACE",
+  ]),
+  path: z.string().startsWith("/"),
+  operationId: z.string().min(1).optional(),
+  summary: z.string().min(1).optional(),
+  tags: z.array(z.string()),
+  normalized: normalizedOperationSchema,
+  warnings: z.array(warningSchema),
+});
+
 const responseSchema = z.object({
   document: z.object({
     openapi: z.string().regex(/^3\.(0|1)\./u),
     title: z.string().min(1),
     version: z.string().min(1),
   }),
-  candidates: z.array(
-    z.object({
-      candidateId: z.string().min(1),
-      jsonPointer: z.string().startsWith("#/paths/"),
-      method: z.enum([
-        "GET",
-        "PUT",
-        "POST",
-        "DELETE",
-        "OPTIONS",
-        "HEAD",
-        "PATCH",
-        "TRACE",
-      ]),
-      path: z.string().startsWith("/"),
-      operationId: z.string().min(1).optional(),
-      summary: z.string().min(1).optional(),
-      tags: z.array(z.string()),
-    }),
-  ),
+  candidates: z.array(importerOperationCandidateSchema),
   warnings: z.array(warningSchema),
   source: z.object({
     kind: z.enum(["paste", "upload", "url"]),
@@ -186,7 +215,7 @@ export class HttpImporterClient implements ImporterClient {
     if (!parsed.success) {
       throw new ImporterClientError(
         "IMPORTER_RESPONSE_INVALID",
-        "The importer response did not match contract v0.4.",
+        "The importer response did not match contract v0.6.",
         false,
       );
     }

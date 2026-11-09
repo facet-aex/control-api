@@ -27,6 +27,23 @@ function validResponse() {
         method: "GET",
         path: "/x",
         tags: [],
+        normalized: {
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {},
+          },
+          outputSchema: { type: "string" },
+          errorSchema: {},
+          servers: [{ url: "https://api.example", variables: {} }],
+          authAlternatives: [],
+          responseMetadata: {
+            successStatusCode: "200",
+            successMediaType: "application/json",
+            errorStatusCodes: [],
+          },
+        },
+        warnings: [],
       },
     ],
     warnings: [],
@@ -42,7 +59,7 @@ function validResponse() {
 }
 
 describe("HTTP importer client", () => {
-  it("validates a v0.4 response and forwards the request ID", async () => {
+  it("validates a v0.6 response and forwards the request ID", async () => {
     const fetchImplementation = vi.fn(async (_url, init) => {
       expect(new Headers(init?.headers).get("x-request-id")).toBe("event-1");
       return new Response(JSON.stringify(validResponse()), {
@@ -61,6 +78,32 @@ describe("HTTP importer client", () => {
       "event-1",
     );
     expect(result.candidates[0]?.jsonPointer).toBe("#/paths/~1x/get");
+    expect(result.candidates[0]?.normalized.outputSchema).toEqual({
+      type: "string",
+    });
+  });
+
+  it("rejects a legacy candidate without normalized schemas", async () => {
+    const legacy = validResponse();
+    const candidate = legacy.candidates[0] as Record<string, unknown>;
+    delete candidate.normalized;
+    delete candidate.warnings;
+    const client = new HttpImporterClient(
+      new URL("http://127.0.0.1:4010"),
+      (async () =>
+        new Response(JSON.stringify(legacy), { status: 200 })) as typeof fetch,
+    );
+
+    await expect(
+      client.parse(
+        { kind: "paste", content: legacy.snapshot.content },
+        limits,
+        "event-legacy",
+      ),
+    ).rejects.toMatchObject<Partial<ImporterClientError>>({
+      code: "IMPORTER_RESPONSE_INVALID",
+      retryable: false,
+    });
   });
 
   it("classifies structured 4xx errors as terminal", async () => {

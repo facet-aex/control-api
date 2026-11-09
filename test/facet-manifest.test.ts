@@ -33,6 +33,43 @@ describe("buildFacetDraftManifest", () => {
         operationId: "getWeather",
         summary: "Read current weather.",
         tags: ["weather"],
+        normalized: {
+          inputSchema: {
+            type: "object",
+            properties: {
+              query: {
+                type: "object",
+                properties: { city: { type: "string" } },
+              },
+            },
+          },
+          outputSchema: {
+            type: "object",
+            properties: { temperature: { type: "number" } },
+          },
+          errorSchema: {
+            type: "object",
+            properties: { message: { type: "string" } },
+          },
+          servers: [{ url: "https://private.example", variables: {} }],
+          authAlternatives: [
+            {
+              schemes: [
+                {
+                  schemeName: "ApiKey",
+                  kind: "API_KEY_HEADER",
+                  parameterName: "X-API-Key",
+                },
+              ],
+            },
+          ],
+          responseMetadata: {
+            successStatusCode: "200",
+            successMediaType: "application/json",
+            errorStatusCodes: ["400"],
+          },
+        },
+        warnings: [],
       },
     });
 
@@ -54,9 +91,23 @@ describe("buildFacetDraftManifest", () => {
         operationId: "getWeather",
         method: "GET",
         publicPathTemplate: "/weather",
-        inputSchema: {},
-        outputSchema: {},
-        errorSchema: {},
+        inputSchema: {
+          type: "object",
+          properties: {
+            query: {
+              type: "object",
+              properties: { city: { type: "string" } },
+            },
+          },
+        },
+        outputSchema: {
+          type: "object",
+          properties: { temperature: { type: "number" } },
+        },
+        errorSchema: {
+          type: "object",
+          properties: { message: { type: "string" } },
+        },
         sideEffectClass: "READ_ONLY",
       },
       executionPolicy: {
@@ -64,7 +115,7 @@ describe("buildFacetDraftManifest", () => {
         maxResponseBytes: 1_048_576,
         redirectPolicy: "DENY",
       },
-      upstreamAuth: { kind: "UNCONFIGURED", configured: false },
+      upstreamAuth: { kind: "API_KEY_HEADER", configured: false },
       provenance: {
         sourceType: "OPENAPI",
         sourceVersionId: identifiers.sourceVersionId,
@@ -75,6 +126,7 @@ describe("buildFacetDraftManifest", () => {
     expect(JSON.stringify(result)).not.toMatch(
       /baseUrl|secretRef|credential|apiKey|bearerToken/iu,
     );
+    expect(JSON.stringify(result)).not.toContain("private.example");
   });
 
   it("produces the same content hash for semantically identical candidate key order", () => {
@@ -99,6 +151,15 @@ describe("buildFacetDraftManifest", () => {
         method: "GET",
         path: "/weather",
         tags: ["weather"],
+        normalized: {
+          inputSchema: {},
+          outputSchema: {},
+          errorSchema: {},
+          servers: [],
+          authAlternatives: [],
+          responseMetadata: { errorStatusCodes: [] },
+        },
+        warnings: [],
       },
     });
     const second = buildFacetDraftManifest({
@@ -109,6 +170,15 @@ describe("buildFacetDraftManifest", () => {
         method: "GET",
         jsonPointer: "#/paths/~1weather/get",
         candidateId: "getWeather",
+        normalized: {
+          inputSchema: {},
+          outputSchema: {},
+          errorSchema: {},
+          servers: [],
+          authAlternatives: [],
+          responseMetadata: { errorStatusCodes: [] },
+        },
+        warnings: [],
       },
     });
 

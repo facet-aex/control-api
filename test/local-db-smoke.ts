@@ -227,6 +227,25 @@ try {
                   method: "GET" as const,
                   path: "/token",
                   tags: [],
+                  normalized: {
+                    inputSchema: {
+                      type: "object",
+                      additionalProperties: false,
+                      properties: {},
+                    },
+                    outputSchema: { type: "object" },
+                    errorSchema: {},
+                    servers: [
+                      { url: "https://api.example.com", variables: {} },
+                    ],
+                    authAlternatives: [],
+                    responseMetadata: {
+                      successStatusCode: "200",
+                      successMediaType: "application/json",
+                      errorStatusCodes: [],
+                    },
+                  },
+                  warnings: [],
                 },
               ]
             : [
@@ -236,6 +255,23 @@ try {
                   method: "GET" as const,
                   path: "/status",
                   tags: [],
+                  normalized: {
+                    inputSchema: {
+                      type: "object",
+                      additionalProperties: false,
+                      properties: {},
+                    },
+                    outputSchema: { type: "object" },
+                    errorSchema: {},
+                    servers: [],
+                    authAlternatives: [],
+                    responseMetadata: {
+                      successStatusCode: "200",
+                      successMediaType: "application/json",
+                      errorStatusCodes: [],
+                    },
+                  },
+                  warnings: [],
                 },
                 {
                   candidateId: "GET /health",
@@ -243,6 +279,27 @@ try {
                   method: "GET" as const,
                   path: "/health",
                   tags: [],
+                  normalized: {
+                    inputSchema: {
+                      type: "object",
+                      additionalProperties: false,
+                      properties: {},
+                    },
+                    outputSchema: {},
+                    errorSchema: {},
+                    servers: [],
+                    authAlternatives: [],
+                    responseMetadata: {
+                      successStatusCode: "204",
+                      errorStatusCodes: [],
+                    },
+                  },
+                  warnings: [
+                    {
+                      code: "MISSING_SUCCESS_RESPONSE_SCHEMA",
+                      message: "The operation has no success schema.",
+                    },
+                  ],
                 },
               ],
         warnings: [],
@@ -337,7 +394,10 @@ try {
   requireStatus(createdDrafts.statusCode, 201, "create Facet drafts");
   const createdFacets = createdDrafts.json().facets as Array<{
     id: string;
-    draftVersion: { sourceVersionId: string };
+    draftVersion: {
+      sourceVersionId: string;
+      validation: { warnings: Array<{ code: string }> };
+    };
   }>;
   if (
     createdFacets.length !== 2 ||
@@ -347,6 +407,15 @@ try {
     )
   ) {
     throw new Error("Facet draft smoke result lost import provenance");
+  }
+  if (
+    !createdFacets.some((facet) =>
+      facet.draftVersion.validation.warnings.some(
+        (warning) => warning.code === "MISSING_SUCCESS_RESPONSE_SCHEMA",
+      ),
+    )
+  ) {
+    throw new Error("Facet draft smoke result lost operation warnings");
   }
   facetIds.push(...createdFacets.map((facet) => facet.id));
 

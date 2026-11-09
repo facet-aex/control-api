@@ -42,6 +42,23 @@ function importerResult(kind: "paste" | "upload" | "url"): ImporterResult {
         method: "GET",
         path: "/x",
         tags: [],
+        normalized: {
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {},
+          },
+          outputSchema: { type: "string" },
+          errorSchema: {},
+          servers: [],
+          authAlternatives: [],
+          responseMetadata: {
+            successStatusCode: "200",
+            successMediaType: "application/json",
+            errorStatusCodes: [],
+          },
+        },
+        warnings: [],
       },
     ],
     warnings: [],

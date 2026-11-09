@@ -1,5 +1,4 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { z } from "zod";
 
 import type { Database } from "../db/client.js";
 import {
@@ -10,18 +9,9 @@ import {
   openApiImportJobs,
 } from "../db/schema.js";
 import { AppError } from "../errors.js";
+import { importerOperationCandidateSchema } from "../imports/importer-client.js";
 import { buildFacetDraftManifest } from "./facet-manifest.js";
 import type { FacetDraftRecord, FacetDraftStore } from "./facet-draft-types.js";
-
-const candidateSchema = z.object({
-  candidateId: z.string().min(1),
-  jsonPointer: z.string().startsWith("#/paths/"),
-  method: z.string().min(1),
-  path: z.string().startsWith("/"),
-  operationId: z.string().min(1).optional(),
-  summary: z.string().min(1).optional(),
-  tags: z.array(z.string()),
-});
 
 function isUniqueViolation(error: unknown): boolean {
   return (
@@ -137,7 +127,7 @@ export class PostgresFacetDraftStore implements FacetDraftStore {
               404,
             );
           }
-          const candidate = candidateSchema.safeParse(
+          const candidate = importerOperationCandidateSchema.safeParse(
             candidateRow.normalizedCandidate,
           );
           if (!candidate.success) {
@@ -201,7 +191,7 @@ export class PostgresFacetDraftStore implements FacetDraftStore {
           const validationResult = {
             status: "pending" as const,
             errors: [],
-            warnings: [],
+            warnings: candidate.data.warnings,
           };
           const createdVersion = requiredRow(
             await transaction

@@ -10,7 +10,8 @@ This Slice 3 checkpoint turns operation candidates from one ready OpenAPI import
 - Candidate IDs and slugs must be unique within the batch; provider slugs remain unique in PostgreSQL.
 - Each initial version is `0.1.0`, private and linked to the exact source version plus operation JSON Pointer.
 - The stored draft manifest and response never include a protected base URL or provider credential.
-- Input/output/error schema normalization, endpoint configuration, upstream-auth mapping, warning acknowledgement, validation and publication remain pending Slice 3 work. Initial drafts therefore have `validation.status = PENDING` and `upstreamAuth.kind = UNCONFIGURED` internally.
+- Input/output/error schemas from importer contract v0.6 are copied into the draft manifest. A single supported auth scheme maps to its API-key/Bearer kind; no-auth operations map to `NONE`. Multiple/combined/unsupported alternatives remain `UNCONFIGURED` for provider choice.
+- Schema closure for referenced parameters/request bodies, endpoint configuration, secret references, warning acknowledgement, final validation and publication remain pending Slice 3 work. Initial drafts therefore keep `validation.status = PENDING`, including importer warnings.
 
 ## Create drafts
 
@@ -70,4 +71,4 @@ The response is `201 Created`:
 }
 ```
 
-Contract artifacts are versioned in `@facet/contracts` v0.5.0. The service keeps equivalent local runtime validation and does not import sibling repository source.
+The operation-selection command remains contract v0.5; the candidate payload it consumes is validated against importer contract v0.6. The service keeps equivalent local runtime validation and does not import sibling repository source.

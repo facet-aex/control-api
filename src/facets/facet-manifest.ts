@@ -10,6 +10,30 @@ export interface StoredOperationCandidate {
   operationId?: string | undefined;
   summary?: string | undefined;
   tags: string[];
+  normalized: {
+    inputSchema: boolean | Record<string, unknown>;
+    outputSchema: boolean | Record<string, unknown>;
+    errorSchema: boolean | Record<string, unknown>;
+    servers: Array<{
+      url: string;
+      description?: string | undefined;
+      variables: Record<string, string>;
+    }>;
+    authAlternatives: Array<{
+      schemes: Array<{
+        schemeName: string;
+        kind: "API_KEY_HEADER" | "API_KEY_QUERY" | "BEARER" | "UNSUPPORTED";
+        parameterName?: string | undefined;
+        sourceType?: string | undefined;
+      }>;
+    }>;
+    responseMetadata: {
+      successStatusCode?: string | undefined;
+      successMediaType?: string | undefined;
+      errorStatusCodes: string[];
+    };
+  };
+  warnings: Array<{ code: string; message: string }>;
 }
 
 interface BuildFacetDraftManifestInput {
@@ -35,6 +59,23 @@ function canonicalize(value: unknown): unknown {
   );
 }
 
+function toUpstreamAuth(candidate: StoredOperationCandidate) {
+  const alternatives = candidate.normalized.authAlternatives;
+  if (
+    alternatives.length === 0 ||
+    alternatives.some((alternative) => alternative.schemes.length === 0)
+  ) {
+    return { kind: "NONE" as const, configured: true };
+  }
+  if (alternatives.length === 1 && alternatives[0]?.schemes.length === 1) {
+    const scheme = alternatives[0].schemes[0];
+    if (scheme && scheme.kind !== "UNSUPPORTED") {
+      return { kind: scheme.kind, configured: false };
+    }
+  }
+  return { kind: "UNCONFIGURED" as const, configured: false };
+}
+
 export function buildFacetDraftManifest(input: BuildFacetDraftManifestInput) {
   const manifest = {
     schemaVersion: "facet.manifest/v1" as const,
@@ -57,9 +98,9 @@ export function buildFacetDraftManifest(input: BuildFacetDraftManifestInput) {
       operationId: input.candidate.operationId ?? input.candidate.candidateId,
       method: input.candidate.method,
       publicPathTemplate: input.candidate.path,
-      inputSchema: {},
-      outputSchema: {},
-      errorSchema: {},
+      inputSchema: input.candidate.normalized.inputSchema,
+      outputSchema: input.candidate.normalized.outputSchema,
+      errorSchema: input.candidate.normalized.errorSchema,
       sideEffectClass: input.selection.sideEffectClass,
     },
     executionPolicy: {
@@ -67,10 +108,7 @@ export function buildFacetDraftManifest(input: BuildFacetDraftManifestInput) {
       maxResponseBytes: 1_048_576,
       redirectPolicy: "DENY" as const,
     },
-    upstreamAuth: {
-      kind: "UNCONFIGURED" as const,
-      configured: false,
-    },
+    upstreamAuth: toUpstreamAuth(input.candidate),
     provenance: {
       sourceType: "OPENAPI" as const,
       sourceVersionId: input.sourceVersionId,

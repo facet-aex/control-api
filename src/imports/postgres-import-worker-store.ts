@@ -235,7 +235,7 @@ export class PostgresImportWorkerStore implements ImportWorkerStore {
         await client.query(
           `insert into import_operation_candidates
              (import_job_id, json_pointer, operation_id, method, path_template, summary, normalized_candidate, warnings)
-           values ($1::uuid, $2, $3, $4, $5, $6, $7::jsonb, '[]'::jsonb)`,
+           values ($1::uuid, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)`,
           [
             work.importJobId,
             candidate.jsonPointer,
@@ -244,6 +244,7 @@ export class PostgresImportWorkerStore implements ImportWorkerStore {
             candidate.path,
             candidate.summary ?? null,
             JSON.stringify(candidate),
+            JSON.stringify(candidate.warnings),
           ],
         );
       }
