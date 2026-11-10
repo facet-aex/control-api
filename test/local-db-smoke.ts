@@ -26,8 +26,10 @@ import {
 } from "../src/db/schema.js";
 import { EndpointConfigService } from "../src/facets/endpoint-config-service.js";
 import { FacetDraftService } from "../src/facets/facet-draft-service.js";
+import { FacetValidationService } from "../src/facets/facet-validation-service.js";
 import { PostgresEndpointConfigStore } from "../src/facets/postgres-endpoint-config-store.js";
 import { PostgresFacetDraftStore } from "../src/facets/postgres-facet-draft-store.js";
+import { PostgresFacetValidationStore } from "../src/facets/postgres-facet-validation-store.js";
 import { ImportService } from "../src/imports/import-service.js";
 import type { ImporterClient } from "../src/imports/importer-client.js";
 import { ImportWorker } from "../src/imports/import-worker.js";
@@ -97,6 +99,13 @@ const app = await buildApp({
     service: new EndpointConfigService(
       providerStore,
       new PostgresEndpointConfigStore(database.db),
+    ),
+  },
+  facetValidationRoutes: {
+    authenticator: new LocalAuthenticator(),
+    service: new FacetValidationService(
+      providerStore,
+      new PostgresFacetValidationStore(database.db),
     ),
   },
 });
@@ -516,6 +525,57 @@ try {
   endpointConfigIds.push(
     (configuredEndpoint.json().endpointConfig as { id: string }).id,
   );
+  const configuredRevision = (
+    configuredEndpoint.json().endpointConfig as { facetVersionVersion: number }
+  ).facetVersionVersion;
+  const validatedDraft = await app.inject({
+    method: "POST",
+    url: `/v1/facet-versions/${createdFacets[0]!.draftVersion.id}/validate`,
+    headers: { "x-facet-dev-user": bob },
+    payload: {
+      version: configuredRevision,
+      warningAcknowledgements: [],
+    },
+  });
+  requireStatus(validatedDraft.statusCode, 200, "validate configured draft");
+  const firstValidation = validatedDraft.json().facetVersion as {
+    status: "DRAFT" | "VALID";
+    version: number;
+    validation: { warnings: Array<{ warningId: string }> };
+  };
+  let finalValidation = firstValidation;
+  if (firstValidation.status === "DRAFT") {
+    const warningIds = firstValidation.validation.warnings.map(
+      (warning) => warning.warningId,
+    );
+    if (warningIds.length === 0) {
+      throw new Error("configured Facet draft stayed invalid without warnings");
+    }
+    const acknowledgedDraft = await app.inject({
+      method: "POST",
+      url: `/v1/facet-versions/${createdFacets[0]!.draftVersion.id}/validate`,
+      headers: { "x-facet-dev-user": bob },
+      payload: {
+        version: firstValidation.version,
+        warningAcknowledgements: warningIds.map((warningId) => ({
+          warningId,
+          reason: "Accepted for the Phase 1 database smoke fixture.",
+        })),
+      },
+    });
+    requireStatus(
+      acknowledgedDraft.statusCode,
+      200,
+      "acknowledge validation warnings",
+    );
+    finalValidation = acknowledgedDraft.json()
+      .facetVersion as typeof firstValidation;
+  }
+  if (finalValidation.status !== "VALID") {
+    throw new Error(
+      "configured and acknowledged Facet draft did not become valid",
+    );
+  }
 
   const usedSecretRevoke = await app.inject({
     method: "DELETE",

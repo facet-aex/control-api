@@ -8,6 +8,10 @@ import {
   type FacetDraftRouteDependencies,
 } from "./facets/facet-draft-routes.js";
 import {
+  registerFacetValidationRoutes,
+  type FacetValidationRouteDependencies,
+} from "./facets/facet-validation-routes.js";
+import {
   registerEndpointConfigRoutes,
   type EndpointConfigRouteDependencies,
 } from "./facets/endpoint-config-routes.js";
@@ -33,6 +37,7 @@ export interface AppDependencies {
   facetDraftRoutes?: FacetDraftRouteDependencies;
   secretRoutes?: SecretRouteDependencies;
   endpointConfigRoutes?: EndpointConfigRouteDependencies;
+  facetValidationRoutes?: FacetValidationRouteDependencies;
 }
 
 function hasErrorCode(error: unknown, code: string): boolean {
@@ -98,6 +103,12 @@ export async function buildApp(
   }
   if (dependencies.endpointConfigRoutes) {
     await registerEndpointConfigRoutes(app, dependencies.endpointConfigRoutes);
+  }
+  if (dependencies.facetValidationRoutes) {
+    await registerFacetValidationRoutes(
+      app,
+      dependencies.facetValidationRoutes,
+    );
   }
 
   app.setErrorHandler((error, request, reply) => {

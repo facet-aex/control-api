@@ -11,7 +11,7 @@ This Slice 3 checkpoint turns operation candidates from one ready OpenAPI import
 - Each initial version is `0.1.0`, private and linked to the exact source version plus operation JSON Pointer.
 - The stored draft manifest and response never include a protected base URL or provider credential.
 - Input/output/error schemas from importer contract v0.6 are copied into the draft manifest. A single supported auth scheme maps to its API-key/Bearer kind; no-auth operations map to `NONE`. Multiple/combined/unsupported alternatives remain `UNCONFIGURED` for provider choice.
-- Write-only API-key/Bearer SecretRefs and protected endpoint configuration are implemented under contract v0.7. Warning acknowledgement, final validation and publication remain pending Slice 3 work, so configured drafts still keep `validation.status = PENDING`. Referenced parameters, request bodies and response schemas arrive as candidate-local schema closure from importer v0.6.
+- Write-only API-key/Bearer SecretRefs and protected endpoint configuration are implemented under contract v0.7. Contract v0.8 implements manifest/schema validation and exact warning acknowledgement. Publication, structural diff and provider selection/configuration UI remain. Referenced parameters, request bodies and response schemas arrive as candidate-local schema closure from importer v0.6.
 
 ## Create drafts
 
@@ -72,3 +72,23 @@ The response is `201 Created`:
 ```
 
 The operation-selection command remains contract v0.5; the candidate payload it consumes is validated against importer contract v0.6. The service keeps equivalent local runtime validation and does not import sibling repository source.
+
+## Validate a draft
+
+`POST /v1/facet-versions/{versionId}/validate`
+
+```json
+{
+  "version": 2,
+  "warningAcknowledgements": [
+    {
+      "warningId": "sha256:...",
+      "reason": "Provider reviewed the missing response schema."
+    }
+  ]
+}
+```
+
+The command validates the contract v1 manifest with Ajv 2020-12, compiles all three normalized schemas, checks private endpoint/auth configuration and verifies every supplied warning ID against the current code-plus-message hash. Unknown/stale acknowledgements return `400 INPUT_INVALID`; stale revisions return `412 VERSION_PRECONDITION_FAILED`. Validation persists safe issues and audit counts only. It never returns schema values, secret values or protected base URLs in error messages.
+
+A version becomes `VALID` only when there are no blocking errors and all warnings are acknowledged. An invalid result remains `DRAFT`, increments the revision and returns the current warning IDs so the provider can make a deliberate second request.

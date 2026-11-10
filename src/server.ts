@@ -5,8 +5,10 @@ import { createAuthenticator } from "./auth/create-authenticator.js";
 import { readConfig } from "./config.js";
 import { createDatabase } from "./db/client.js";
 import { FacetDraftService } from "./facets/facet-draft-service.js";
+import { FacetValidationService } from "./facets/facet-validation-service.js";
 import { EndpointConfigService } from "./facets/endpoint-config-service.js";
 import { PostgresEndpointConfigStore } from "./facets/postgres-endpoint-config-store.js";
+import { PostgresFacetValidationStore } from "./facets/postgres-facet-validation-store.js";
 import { PostgresFacetDraftStore } from "./facets/postgres-facet-draft-store.js";
 import { ImportService } from "./imports/import-service.js";
 import { PostgresImportStore } from "./imports/postgres-import-store.js";
@@ -56,6 +58,10 @@ const endpointConfigService = new EndpointConfigService(
   new PostgresProviderStore(database.db),
   new PostgresEndpointConfigStore(database.db),
 );
+const facetValidationService = new FacetValidationService(
+  new PostgresProviderStore(database.db),
+  new PostgresFacetValidationStore(database.db),
+);
 const app = await buildApp({
   checkDatabase: () => database.check(),
   environment: config.FACET_ENV,
@@ -80,6 +86,10 @@ const app = await buildApp({
   endpointConfigRoutes: {
     authenticator,
     service: endpointConfigService,
+  },
+  facetValidationRoutes: {
+    authenticator,
+    service: facetValidationService,
   },
 });
 
