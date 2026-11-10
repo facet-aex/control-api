@@ -1,0 +1,2 @@
+ALTER TABLE "facets" ADD COLUMN "current_published_version_id" uuid;--> statement-breakpoint
+ALTER TABLE "facets" ADD CONSTRAINT "facets_current_published_version_id_facet_versions_id_fk" FOREIGN KEY ("current_published_version_id") REFERENCES "public"."facet_versions"("id") ON DELETE restrict ON UPDATE no action;

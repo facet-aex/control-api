@@ -43,6 +43,13 @@
       "when": 1794240060369,
       "tag": "0005_stale_archangel",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794296841965,
+      "tag": "0006_gifted_whizzer",
+      "breakpoints": true
     }
   ]
 }

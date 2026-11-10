@@ -26,9 +26,11 @@ import {
 } from "../src/db/schema.js";
 import { EndpointConfigService } from "../src/facets/endpoint-config-service.js";
 import { FacetDraftService } from "../src/facets/facet-draft-service.js";
+import { FacetPublicationService } from "../src/facets/facet-publication-service.js";
 import { FacetValidationService } from "../src/facets/facet-validation-service.js";
 import { PostgresEndpointConfigStore } from "../src/facets/postgres-endpoint-config-store.js";
 import { PostgresFacetDraftStore } from "../src/facets/postgres-facet-draft-store.js";
+import { PostgresFacetPublicationStore } from "../src/facets/postgres-facet-publication-store.js";
 import { PostgresFacetValidationStore } from "../src/facets/postgres-facet-validation-store.js";
 import { ImportService } from "../src/imports/import-service.js";
 import type { ImporterClient } from "../src/imports/importer-client.js";
@@ -43,7 +45,8 @@ import { SecretService } from "../src/secrets/secret-service.js";
 import { LocalObjectStore } from "../src/storage/local-object-store.js";
 
 loadEnvFile();
-process.env.NODE_ENV = "test";
+process.env.NODE_ENV =
+  process.env.FACET_SMOKE_DEBUG === "1" ? "development" : "test";
 const config = readConfig();
 if (config.FACET_ENV !== "local") {
   throw new Error("db:smoke is permitted only when FACET_ENV=local");
@@ -106,6 +109,13 @@ const app = await buildApp({
     service: new FacetValidationService(
       providerStore,
       new PostgresFacetValidationStore(database.db),
+    ),
+  },
+  facetPublicationRoutes: {
+    authenticator: new LocalAuthenticator(),
+    service: new FacetPublicationService(
+      providerStore,
+      new PostgresFacetPublicationStore(database.db),
     ),
   },
 });
@@ -425,7 +435,11 @@ try {
       })),
     },
   });
-  requireStatus(createdDrafts.statusCode, 201, "create Facet drafts");
+  if (createdDrafts.statusCode !== 201) {
+    throw new Error(
+      `create Facet drafts: expected 201, received ${createdDrafts.statusCode}; ${createdDrafts.body}`,
+    );
+  }
   const createdFacets = createdDrafts.json().facets as Array<{
     id: string;
     draftVersion: {
@@ -577,6 +591,84 @@ try {
     );
   }
 
+  const publishedDraft = await app.inject({
+    method: "POST",
+    url: `/v1/facet-versions/${createdFacets[0]!.draftVersion.id}/publish`,
+    headers: { "x-facet-dev-user": bob },
+    payload: {
+      version: finalValidation.version,
+      visibility: "PUBLIC",
+    },
+  });
+  requireStatus(publishedDraft.statusCode, 200, "publish valid Facet version");
+  const publication = publishedDraft.json() as {
+    facet: {
+      id: string;
+      status: string;
+      visibility: string;
+      currentPublishedVersionId: string;
+    };
+    facetVersion: { id: string; status: string; contentHash: string };
+  };
+  if (
+    publication.facet.id !== createdFacets[0]!.id ||
+    publication.facet.status !== "PUBLISHED" ||
+    publication.facet.visibility !== "PUBLIC" ||
+    publication.facet.currentPublishedVersionId !==
+      createdFacets[0]!.draftVersion.id ||
+    publication.facetVersion.status !== "PUBLISHED" ||
+    !publication.facetVersion.contentHash.startsWith("sha256:")
+  ) {
+    throw new Error("publication did not atomically advance the Facet pointer");
+  }
+  const repeatedPublication = await app.inject({
+    method: "POST",
+    url: `/v1/facet-versions/${createdFacets[0]!.draftVersion.id}/publish`,
+    headers: { "x-facet-dev-user": bob },
+    payload: {
+      version: finalValidation.version + 1,
+      visibility: "PUBLIC",
+    },
+  });
+  requireStatus(
+    repeatedPublication.statusCode,
+    409,
+    "reject repeated publication",
+  );
+  const publishedRevision = finalValidation.version + 1;
+  const publishedRevalidation = await app.inject({
+    method: "POST",
+    url: `/v1/facet-versions/${createdFacets[0]!.draftVersion.id}/validate`,
+    headers: { "x-facet-dev-user": bob },
+    payload: {
+      version: publishedRevision,
+      warningAcknowledgements: [],
+    },
+  });
+  requireStatus(
+    publishedRevalidation.statusCode,
+    409,
+    "protect published validation state",
+  );
+  const publishedReconfiguration = await app.inject({
+    method: "PUT",
+    url: `/v1/facet-versions/${createdFacets[0]!.draftVersion.id}/endpoint-config`,
+    headers: { "x-facet-dev-user": bob },
+    payload: {
+      version: publishedRevision,
+      baseUrl: "https://changed.example.com",
+      auth: { kind: "NONE" },
+      timeoutMs: 15_000,
+      maxResponseBytes: 1_048_576,
+      redirectPolicy: "DENY",
+    },
+  });
+  requireStatus(
+    publishedReconfiguration.statusCode,
+    409,
+    "protect published endpoint configuration",
+  );
+
   const usedSecretRevoke = await app.inject({
     method: "DELETE",
     url: `/v1/providers/${providerId}/secrets/${secretRefId}`,
@@ -604,10 +696,14 @@ try {
   }
 
   console.log(
-    "FACET provider, OpenAPI worker, Facet draft, secret, and endpoint database smoke test passed.",
+    "FACET provider, OpenAPI worker, Facet draft, secret, endpoint, validation, and publication database smoke test passed.",
   );
 } finally {
   if (facetIds.length > 0) {
+    await database.db
+      .update(facets)
+      .set({ currentPublishedVersionId: null })
+      .where(inArray(facets.id, facetIds));
     await database.db
       .delete(facetVersions)
       .where(inArray(facetVersions.facetId, facetIds));

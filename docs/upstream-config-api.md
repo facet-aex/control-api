@@ -41,4 +41,4 @@ Auth is one of:
 
 The SecretRef must be active, belong to the same provider and have the matching kind. The base URL must be concrete HTTPS without embedded credentials, query or fragment. Method and path are copied from the immutable imported operation, never accepted from the browser. `version` is the current Facet Version revision and stale writes return `412 VERSION_PRECONDITION_FAILED`.
 
-The response confirms `baseUrlConfigured: true` but omits the protected base URL. Configuring a draft updates its public execution-policy/auth metadata, content hash and revision. Published/disabled versions reject this mutation. Phase 1 does not perform DNS/egress reachability checks or execute the endpoint; final publication validation still remains.
+The response confirms `baseUrlConfigured: true` but omits the protected base URL. Configuring a draft updates its public execution-policy/auth metadata, content hash and revision. Published/disabled versions reject this mutation. Phase 1 does not perform DNS/egress reachability checks or execute the endpoint; the separate validation and publication commands remain authoritative.

@@ -5,11 +5,13 @@ import { createAuthenticator } from "./auth/create-authenticator.js";
 import { readConfig } from "./config.js";
 import { createDatabase } from "./db/client.js";
 import { FacetDraftService } from "./facets/facet-draft-service.js";
+import { FacetPublicationService } from "./facets/facet-publication-service.js";
 import { FacetValidationService } from "./facets/facet-validation-service.js";
 import { EndpointConfigService } from "./facets/endpoint-config-service.js";
 import { PostgresEndpointConfigStore } from "./facets/postgres-endpoint-config-store.js";
 import { PostgresFacetValidationStore } from "./facets/postgres-facet-validation-store.js";
 import { PostgresFacetDraftStore } from "./facets/postgres-facet-draft-store.js";
+import { PostgresFacetPublicationStore } from "./facets/postgres-facet-publication-store.js";
 import { ImportService } from "./imports/import-service.js";
 import { PostgresImportStore } from "./imports/postgres-import-store.js";
 import { PostgresProviderStore } from "./providers/postgres-provider-store.js";
@@ -62,6 +64,10 @@ const facetValidationService = new FacetValidationService(
   new PostgresProviderStore(database.db),
   new PostgresFacetValidationStore(database.db),
 );
+const facetPublicationService = new FacetPublicationService(
+  new PostgresProviderStore(database.db),
+  new PostgresFacetPublicationStore(database.db),
+);
 const app = await buildApp({
   checkDatabase: () => database.check(),
   environment: config.FACET_ENV,
@@ -90,6 +96,10 @@ const app = await buildApp({
   facetValidationRoutes: {
     authenticator,
     service: facetValidationService,
+  },
+  facetPublicationRoutes: {
+    authenticator,
+    service: facetPublicationService,
   },
 });
 

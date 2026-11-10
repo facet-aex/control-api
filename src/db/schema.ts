@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  type AnyPgColumn,
   index,
   integer,
   jsonb,
@@ -280,6 +281,10 @@ export const facets = pgTable(
       .default(sql`ARRAY[]::text[]`),
     status: facetStatus("status").notNull().default("draft"),
     visibility: facetVisibility("visibility").notNull().default("private"),
+    currentPublishedVersionId: uuid("current_published_version_id").references(
+      (): AnyPgColumn => facetVersions.id,
+      { onDelete: "restrict" },
+    ),
     version: integer("version").notNull().default(1),
     ...timestamps,
   },
