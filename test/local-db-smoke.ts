@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadEnvFile } from "node:process";
@@ -14,15 +14,19 @@ import {
   apiSources,
   apiSourceVersions,
   auditEvents,
+  endpointConfigs,
   facets,
   facetVersions,
   importOperationCandidates,
   openApiImportJobs,
   outboxEvents,
   providers,
+  secretRefs,
   users,
 } from "../src/db/schema.js";
+import { EndpointConfigService } from "../src/facets/endpoint-config-service.js";
 import { FacetDraftService } from "../src/facets/facet-draft-service.js";
+import { PostgresEndpointConfigStore } from "../src/facets/postgres-endpoint-config-store.js";
 import { PostgresFacetDraftStore } from "../src/facets/postgres-facet-draft-store.js";
 import { ImportService } from "../src/imports/import-service.js";
 import type { ImporterClient } from "../src/imports/importer-client.js";
@@ -31,6 +35,9 @@ import { PostgresImportWorkerStore } from "../src/imports/postgres-import-worker
 import { PostgresImportStore } from "../src/imports/postgres-import-store.js";
 import { PostgresProviderStore } from "../src/providers/postgres-provider-store.js";
 import { ProviderService } from "../src/providers/provider-service.js";
+import { LocalSecretValueStore } from "../src/secrets/local-secret-value-store.js";
+import { PostgresSecretStore } from "../src/secrets/postgres-secret-store.js";
+import { SecretService } from "../src/secrets/secret-service.js";
 import { LocalObjectStore } from "../src/storage/local-object-store.js";
 
 loadEnvFile();
@@ -42,6 +49,7 @@ if (config.FACET_ENV !== "local") {
 
 const database = createDatabase(config.DATABASE_URL);
 const objectRoot = await mkdtemp(join(tmpdir(), "facet-db-smoke-"));
+const secretRoot = await mkdtemp(join(tmpdir(), "facet-secret-smoke-"));
 const providerStore = new PostgresProviderStore(database.db);
 const app = await buildApp({
   checkDatabase: () => database.check(),
@@ -76,6 +84,21 @@ const app = await buildApp({
       new PostgresFacetDraftStore(database.db),
     ),
   },
+  secretRoutes: {
+    authenticator: new LocalAuthenticator(),
+    service: new SecretService(
+      providerStore,
+      new PostgresSecretStore(database.db),
+      new LocalSecretValueStore(secretRoot),
+    ),
+  },
+  endpointConfigRoutes: {
+    authenticator: new LocalAuthenticator(),
+    service: new EndpointConfigService(
+      providerStore,
+      new PostgresEndpointConfigStore(database.db),
+    ),
+  },
 });
 
 const suffix = randomUUID();
@@ -85,6 +108,8 @@ let providerId: string | undefined;
 const importJobIds: string[] = [];
 const apiSourceIds: string[] = [];
 const facetIds: string[] = [];
+const endpointConfigIds: string[] = [];
+const secretRefIds: string[] = [];
 
 function requireStatus(
   actual: number,
@@ -395,6 +420,8 @@ try {
   const createdFacets = createdDrafts.json().facets as Array<{
     id: string;
     draftVersion: {
+      id: string;
+      version: number;
       sourceVersionId: string;
       validation: { warnings: Array<{ code: string }> };
     };
@@ -419,8 +446,105 @@ try {
   }
   facetIds.push(...createdFacets.map((facet) => facet.id));
 
+  const createdSecret = await app.inject({
+    method: "POST",
+    url: `/v1/providers/${providerId}/secrets`,
+    headers: { "x-facet-dev-user": bob },
+    payload: {
+      kind: "API_KEY",
+      label: "Database smoke key",
+      value: `db-smoke-secret-${suffix}`,
+    },
+  });
+  requireStatus(createdSecret.statusCode, 201, "create secret reference");
+  if (createdSecret.body.includes(`db-smoke-secret-${suffix}`)) {
+    throw new Error("secret smoke response leaked the secret value");
+  }
+  const secretRefId = (createdSecret.json().secret as { id: string }).id;
+  secretRefIds.push(secretRefId);
+  const rotatedSecret = await app.inject({
+    method: "POST",
+    url: `/v1/providers/${providerId}/secrets/${secretRefId}/rotate`,
+    headers: { "x-facet-dev-user": bob },
+    payload: { value: `db-smoke-rotated-${suffix}` },
+  });
+  requireStatus(rotatedSecret.statusCode, 200, "rotate secret reference");
+  if (rotatedSecret.body.includes(`db-smoke-rotated-${suffix}`)) {
+    throw new Error("secret rotation response leaked the secret value");
+  }
+  const storedSecret = (
+    await database.db
+      .select()
+      .from(secretRefs)
+      .where(eq(secretRefs.id, secretRefId))
+      .limit(1)
+  )[0];
+  if (
+    !storedSecret ||
+    JSON.stringify(storedSecret).includes("db-smoke-secret") ||
+    JSON.stringify(storedSecret).includes("db-smoke-rotated")
+  ) {
+    throw new Error("secret smoke value reached the application database");
+  }
+  if ((await readdir(secretRoot)).length !== 1) {
+    throw new Error(
+      "secret rotation did not remove the superseded local value",
+    );
+  }
+
+  const configuredEndpoint = await app.inject({
+    method: "PUT",
+    url: `/v1/facet-versions/${createdFacets[0]!.draftVersion.id}/endpoint-config`,
+    headers: { "x-facet-dev-user": bob },
+    payload: {
+      version: createdFacets[0]!.draftVersion.version,
+      baseUrl: "https://api.example.com",
+      auth: {
+        kind: "API_KEY_HEADER",
+        secretRefId,
+        parameterName: "X-Api-Key",
+      },
+      timeoutMs: 15_000,
+      maxResponseBytes: 1_048_576,
+      redirectPolicy: "DENY",
+    },
+  });
+  requireStatus(configuredEndpoint.statusCode, 200, "configure endpoint");
+  if (configuredEndpoint.body.includes("api.example.com")) {
+    throw new Error("endpoint smoke response leaked the protected base URL");
+  }
+  endpointConfigIds.push(
+    (configuredEndpoint.json().endpointConfig as { id: string }).id,
+  );
+
+  const usedSecretRevoke = await app.inject({
+    method: "DELETE",
+    url: `/v1/providers/${providerId}/secrets/${secretRefId}`,
+    headers: { "x-facet-dev-user": bob },
+  });
+  requireStatus(
+    usedSecretRevoke.statusCode,
+    409,
+    "protect an endpoint-configured secret",
+  );
+  const safeAuditRows = await database.db
+    .select({
+      eventType: auditEvents.eventType,
+      metadata: auditEvents.metadata,
+    })
+    .from(auditEvents)
+    .where(eq(auditEvents.providerId, providerId));
+  const serializedAudit = JSON.stringify(safeAuditRows);
+  if (
+    serializedAudit.includes("db-smoke-secret") ||
+    serializedAudit.includes("db-smoke-rotated") ||
+    serializedAudit.includes("api.example.com")
+  ) {
+    throw new Error("secret or protected endpoint data reached audit metadata");
+  }
+
   console.log(
-    "FACET provider, OpenAPI worker, and Facet draft database smoke test passed.",
+    "FACET provider, OpenAPI worker, Facet draft, secret, and endpoint database smoke test passed.",
   );
 } finally {
   if (facetIds.length > 0) {
@@ -428,6 +552,16 @@ try {
       .delete(facetVersions)
       .where(inArray(facetVersions.facetId, facetIds));
     await database.db.delete(facets).where(inArray(facets.id, facetIds));
+  }
+  if (endpointConfigIds.length > 0) {
+    await database.db
+      .delete(endpointConfigs)
+      .where(inArray(endpointConfigs.id, endpointConfigIds));
+  }
+  if (secretRefIds.length > 0) {
+    await database.db
+      .delete(secretRefs)
+      .where(inArray(secretRefs.id, secretRefIds));
   }
   for (const importJobId of importJobIds) {
     await database.db
@@ -461,4 +595,5 @@ try {
   await app.close();
   await database.close();
   await rm(objectRoot, { recursive: true, force: true });
+  await rm(secretRoot, { recursive: true, force: true });
 }

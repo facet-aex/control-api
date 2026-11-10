@@ -8,6 +8,10 @@ import {
   type FacetDraftRouteDependencies,
 } from "./facets/facet-draft-routes.js";
 import {
+  registerEndpointConfigRoutes,
+  type EndpointConfigRouteDependencies,
+} from "./facets/endpoint-config-routes.js";
+import {
   registerImportRoutes,
   type ImportRouteDependencies,
 } from "./imports/import-routes.js";
@@ -15,6 +19,10 @@ import {
   registerProviderRoutes,
   type ProviderRouteDependencies,
 } from "./providers/provider-routes.js";
+import {
+  registerSecretRoutes,
+  type SecretRouteDependencies,
+} from "./secrets/secret-routes.js";
 
 export interface AppDependencies {
   checkDatabase: () => Promise<void>;
@@ -23,6 +31,8 @@ export interface AppDependencies {
   providerRoutes?: ProviderRouteDependencies;
   importRoutes?: ImportRouteDependencies;
   facetDraftRoutes?: FacetDraftRouteDependencies;
+  secretRoutes?: SecretRouteDependencies;
+  endpointConfigRoutes?: EndpointConfigRouteDependencies;
 }
 
 function hasErrorCode(error: unknown, code: string): boolean {
@@ -82,6 +92,12 @@ export async function buildApp(
   }
   if (dependencies.facetDraftRoutes) {
     await registerFacetDraftRoutes(app, dependencies.facetDraftRoutes);
+  }
+  if (dependencies.secretRoutes) {
+    await registerSecretRoutes(app, dependencies.secretRoutes);
+  }
+  if (dependencies.endpointConfigRoutes) {
+    await registerEndpointConfigRoutes(app, dependencies.endpointConfigRoutes);
   }
 
   app.setErrorHandler((error, request, reply) => {

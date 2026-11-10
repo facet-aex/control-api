@@ -5,11 +5,16 @@ import { createAuthenticator } from "./auth/create-authenticator.js";
 import { readConfig } from "./config.js";
 import { createDatabase } from "./db/client.js";
 import { FacetDraftService } from "./facets/facet-draft-service.js";
+import { EndpointConfigService } from "./facets/endpoint-config-service.js";
+import { PostgresEndpointConfigStore } from "./facets/postgres-endpoint-config-store.js";
 import { PostgresFacetDraftStore } from "./facets/postgres-facet-draft-store.js";
 import { ImportService } from "./imports/import-service.js";
 import { PostgresImportStore } from "./imports/postgres-import-store.js";
 import { PostgresProviderStore } from "./providers/postgres-provider-store.js";
 import { ProviderService } from "./providers/provider-service.js";
+import { LocalSecretValueStore } from "./secrets/local-secret-value-store.js";
+import { PostgresSecretStore } from "./secrets/postgres-secret-store.js";
+import { SecretService } from "./secrets/secret-service.js";
 import { LocalObjectStore } from "./storage/local-object-store.js";
 
 try {
@@ -42,6 +47,15 @@ const facetDraftService = new FacetDraftService(
   new PostgresProviderStore(database.db),
   new PostgresFacetDraftStore(database.db),
 );
+const secretService = new SecretService(
+  new PostgresProviderStore(database.db),
+  new PostgresSecretStore(database.db),
+  new LocalSecretValueStore(config.FACET_SECRET_ROOT),
+);
+const endpointConfigService = new EndpointConfigService(
+  new PostgresProviderStore(database.db),
+  new PostgresEndpointConfigStore(database.db),
+);
 const app = await buildApp({
   checkDatabase: () => database.check(),
   environment: config.FACET_ENV,
@@ -58,6 +72,14 @@ const app = await buildApp({
   facetDraftRoutes: {
     authenticator,
     service: facetDraftService,
+  },
+  secretRoutes: {
+    authenticator,
+    service: secretService,
+  },
+  endpointConfigRoutes: {
+    authenticator,
+    service: endpointConfigService,
   },
 });
 

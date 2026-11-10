@@ -59,6 +59,11 @@ function canonicalize(value: unknown): unknown {
   );
 }
 
+export function hashFacetManifest(manifest: unknown): string {
+  const serialized = JSON.stringify(canonicalize(manifest));
+  return `sha256:${createHash("sha256").update(serialized).digest("hex")}`;
+}
+
 function toUpstreamAuth(candidate: StoredOperationCandidate) {
   const alternatives = candidate.normalized.authAlternatives;
   if (
@@ -115,10 +120,7 @@ export function buildFacetDraftManifest(input: BuildFacetDraftManifestInput) {
       sourceOperationPointer: input.sourceOperationPointer,
     },
   };
-  const serialized = JSON.stringify(canonicalize(manifest));
-  const contentHash = `sha256:${createHash("sha256")
-    .update(serialized)
-    .digest("hex")}`;
+  const contentHash = hashFacetManifest(manifest);
 
   return { manifest, contentHash };
 }

@@ -11,7 +11,7 @@ This Slice 3 checkpoint turns operation candidates from one ready OpenAPI import
 - Each initial version is `0.1.0`, private and linked to the exact source version plus operation JSON Pointer.
 - The stored draft manifest and response never include a protected base URL or provider credential.
 - Input/output/error schemas from importer contract v0.6 are copied into the draft manifest. A single supported auth scheme maps to its API-key/Bearer kind; no-auth operations map to `NONE`. Multiple/combined/unsupported alternatives remain `UNCONFIGURED` for provider choice.
-- Schema closure for referenced parameters/request bodies, endpoint configuration, secret references, warning acknowledgement, final validation and publication remain pending Slice 3 work. Initial drafts therefore keep `validation.status = PENDING`, including importer warnings.
+- Write-only API-key/Bearer SecretRefs and protected endpoint configuration are implemented under contract v0.7. Warning acknowledgement, final validation and publication remain pending Slice 3 work, so configured drafts still keep `validation.status = PENDING`. Referenced parameters, request bodies and response schemas arrive as candidate-local schema closure from importer v0.6.
 
 ## Create drafts
 

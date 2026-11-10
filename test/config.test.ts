@@ -37,6 +37,7 @@ describe("authentication configuration", () => {
     expect(config.CLERK_JWT_KEY).toBeUndefined();
     expect(config.CLERK_JWT_ISSUER).toBeUndefined();
     expect(config.FACET_OBJECT_ROOT).toBe(".facet-data/objects");
+    expect(config.FACET_SECRET_ROOT).toBe(".facet-data/secrets");
     expect(config.FACET_IMPORT_MAX_DOCUMENT_BYTES).toBe(5_242_880);
     expect(config.FACET_IMPORT_MAX_REDIRECTS).toBe(3);
     expect(config.FACET_IMPORT_TIMEOUT_MS).toBe(10_000);

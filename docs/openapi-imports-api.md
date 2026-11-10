@@ -55,7 +55,7 @@ The response includes job identifiers, status, warnings and a safe error summary
 
 `GET /v1/openapi-imports/:jobId/operations`
 
-Provider members may retrieve normalized operation candidates after the worker persists them. Importer contract v0.6 adds namespaced input schema, selected output/error schemas, private server templates, auth alternatives, response metadata and per-operation warnings. Schema examples, defaults and unallowlisted `x-*` extensions are removed before persistence. It never includes the protected source URL, raw snapshot, object key or filesystem path. Referenced parameter/request-body schema closure is not yet embedded; those cases carry blocking warnings for later validation.
+Provider members may retrieve normalized operation candidates after the worker persists them. Importer contract v0.6 adds namespaced input schema, selected output/error schemas, private server templates, auth alternatives, response metadata and per-operation warnings. Schema examples, defaults and unallowlisted `x-*` extensions are removed before persistence. Reachable referenced schemas are embedded as candidate-local `$defs`; recursive references remain local and serializable. It never includes the protected source URL, raw snapshot, remote reference URL, object key or filesystem path.
 
 ## Limits
 

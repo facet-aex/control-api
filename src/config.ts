@@ -19,6 +19,7 @@ const environmentSchema = z.object({
   DATABASE_URL: z.string().url(),
   WEB_ORIGIN: z.string().url().default("http://localhost:3000"),
   FACET_OBJECT_ROOT: z.string().min(1).default(".facet-data/objects"),
+  FACET_SECRET_ROOT: z.string().min(1).default(".facet-data/secrets"),
   FACET_IMPORT_MAX_DOCUMENT_BYTES: z.coerce
     .number()
     .int()

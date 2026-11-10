@@ -65,6 +65,18 @@ export const openApiImportStatus = pgEnum("openapi_import_status", [
   "failed",
   "expired",
 ]);
+export const secretKind = pgEnum("secret_kind", ["api_key", "bearer_token"]);
+export const secretStatus = pgEnum("secret_status", ["active", "revoked"]);
+export const endpointAuthKind = pgEnum("endpoint_auth_kind", [
+  "none",
+  "api_key_header",
+  "api_key_query",
+  "bearer",
+]);
+export const endpointRedirectPolicy = pgEnum("endpoint_redirect_policy", [
+  "deny",
+  "same_origin",
+]);
 
 export const users = pgTable(
   "users",
@@ -277,6 +289,63 @@ export const facets = pgTable(
   ],
 );
 
+export const secretRefs = pgTable(
+  "secret_refs",
+  {
+    id: uuid("id")
+      .default(sql`uuidv7()`)
+      .primaryKey(),
+    providerId: uuid("provider_id")
+      .notNull()
+      .references(() => providers.id, { onDelete: "restrict" }),
+    kind: secretKind("kind").notNull(),
+    label: text("label").notNull(),
+    vaultProvider: text("vault_provider").notNull(),
+    vaultReference: text("vault_reference").notNull(),
+    status: secretStatus("status").notNull().default("active"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    rotatedAt: timestamp("rotated_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("secret_refs_provider_status_idx").on(table.providerId, table.status),
+  ],
+);
+
+export const endpointConfigs = pgTable(
+  "endpoint_configs",
+  {
+    id: uuid("id")
+      .default(sql`uuidv7()`)
+      .primaryKey(),
+    providerId: uuid("provider_id")
+      .notNull()
+      .references(() => providers.id, { onDelete: "restrict" }),
+    protectedBaseUrl: text("protected_base_url").notNull(),
+    method: text("method").notNull(),
+    pathTemplate: text("path_template").notNull(),
+    authKind: endpointAuthKind("auth_kind").notNull(),
+    authTemplate: jsonb("auth_template")
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    secretRefId: uuid("secret_ref_id").references(() => secretRefs.id, {
+      onDelete: "restrict",
+    }),
+    timeoutMs: integer("timeout_ms").notNull(),
+    maxResponseBytes: integer("max_response_bytes").notNull(),
+    redirectPolicy: endpointRedirectPolicy("redirect_policy").notNull(),
+    egressPolicyId: text("egress_policy_id").notNull(),
+    version: integer("version").notNull().default(1),
+    ...timestamps,
+  },
+  (table) => [
+    index("endpoint_configs_provider_idx").on(table.providerId),
+    index("endpoint_configs_secret_ref_idx").on(table.secretRefId),
+  ],
+);
+
 export const facetVersions = pgTable(
   "facet_versions",
   {
@@ -300,6 +369,10 @@ export const facetVersions = pgTable(
     warningAcknowledgements: jsonb("warning_acknowledgements")
       .notNull()
       .default(sql`'[]'::jsonb`),
+    endpointConfigId: uuid("endpoint_config_id").references(
+      () => endpointConfigs.id,
+      { onDelete: "restrict" },
+    ),
     operation: jsonb("operation").notNull(),
     inputSchema: jsonb("input_schema").notNull(),
     outputSchema: jsonb("output_schema").notNull(),
