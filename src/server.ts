@@ -12,6 +12,7 @@ import { PostgresEndpointConfigStore } from "./facets/postgres-endpoint-config-s
 import { PostgresFacetValidationStore } from "./facets/postgres-facet-validation-store.js";
 import { PostgresFacetDraftStore } from "./facets/postgres-facet-draft-store.js";
 import { PostgresFacetPublicationStore } from "./facets/postgres-facet-publication-store.js";
+import { PostgresPublicCatalog } from "./facets/public-catalog.js";
 import { ImportService } from "./imports/import-service.js";
 import { PostgresImportStore } from "./imports/postgres-import-store.js";
 import { PostgresProviderStore } from "./providers/postgres-provider-store.js";
@@ -101,6 +102,7 @@ const app = await buildApp({
     authenticator,
     service: facetPublicationService,
   },
+  publicCatalog: new PostgresPublicCatalog(database.db),
 });
 
 const shutdown = async (signal: string) => {

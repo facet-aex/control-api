@@ -1,0 +1,40 @@
+openapi: 3.1.0
+info:
+  title: GitHub public repository lookup for FACET demo
+  version: 1.0.0
+  description: Narrow provenance-recorded fixture for the official GitHub Get a repository endpoint.
+servers:
+  - url: https://api.github.com
+paths:
+  /repos/{owner}/{repo}:
+    get:
+      operationId: getPublicRepository
+      summary: Get a public GitHub repository
+      description: Returns public repository metadata without authentication.
+      parameters:
+        - name: owner
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_.-]+$'
+        - name: repo
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_.-]+$'
+      responses:
+        '200':
+          description: Public repository metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, name, full_name, html_url]
+                properties:
+                  id: { type: integer }
+                  name: { type: string }
+                  full_name: { type: string }
+                  description: { type: [string, 'null'] }
+                  html_url: { type: string, format: uri }

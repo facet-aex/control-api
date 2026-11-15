@@ -32,6 +32,7 @@ import { PostgresEndpointConfigStore } from "../src/facets/postgres-endpoint-con
 import { PostgresFacetDraftStore } from "../src/facets/postgres-facet-draft-store.js";
 import { PostgresFacetPublicationStore } from "../src/facets/postgres-facet-publication-store.js";
 import { PostgresFacetValidationStore } from "../src/facets/postgres-facet-validation-store.js";
+import { PostgresPublicCatalog } from "../src/facets/public-catalog.js";
 import { ImportService } from "../src/imports/import-service.js";
 import type { ImporterClient } from "../src/imports/importer-client.js";
 import { ImportWorker } from "../src/imports/import-worker.js";
@@ -57,6 +58,7 @@ const objectRoot = await mkdtemp(join(tmpdir(), "facet-db-smoke-"));
 const secretRoot = await mkdtemp(join(tmpdir(), "facet-secret-smoke-"));
 const providerStore = new PostgresProviderStore(database.db);
 const app = await buildApp({
+  publicCatalog: new PostgresPublicCatalog(database.db),
   checkDatabase: () => database.check(),
   environment: config.FACET_ENV,
   webOrigin: config.WEB_ORIGIN,
@@ -620,6 +622,37 @@ try {
     !publication.facetVersion.contentHash.startsWith("sha256:")
   ) {
     throw new Error("publication did not atomically advance the Facet pointer");
+  }
+  const catalogList = await app.inject({
+    method: "GET",
+    url: "/v1/catalog/facets?limit=20",
+  });
+  requireStatus(catalogList.statusCode, 200, "list published public Facets");
+  const publicItems = (catalogList.json() as { facets: Array<{ id: string }> })
+    .facets;
+  if (!publicItems.some((item) => item.id === publication.facet.id)) {
+    throw new Error("published public Facet is missing from catalog");
+  }
+  const intentSearch = await app.inject({
+    method: "GET",
+    url: "/v1/catalog/facets?q=find%20database%20smoke%20tool",
+  });
+  requireStatus(intentSearch.statusCode, 200, "search by intent words");
+  if (
+    !(intentSearch.json() as { facets: Array<{ id: string }> }).facets.some(
+      (item) => item.id === publication.facet.id,
+    )
+  )
+    throw new Error("intent search did not find the published Facet");
+  const catalogDetail = await app.inject({
+    method: "GET",
+    url: `/v1/catalog/facets/${publication.facet.id}`,
+  });
+  requireStatus(catalogDetail.statusCode, 200, "read published public Facet");
+  if (
+    /protectedBaseUrl|secretRefId|vaultReference/iu.test(catalogDetail.body)
+  ) {
+    throw new Error("private endpoint or secret reference leaked into catalog");
   }
   const repeatedPublication = await app.inject({
     method: "POST",

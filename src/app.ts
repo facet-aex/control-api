@@ -3,6 +3,8 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { ZodError } from "zod";
 
 import { AppError } from "./errors.js";
+import { registerPublicCatalogRoutes } from "./facets/public-catalog-routes.js";
+import type { PublicCatalog } from "./facets/public-catalog.js";
 import {
   registerFacetDraftRoutes,
   type FacetDraftRouteDependencies,
@@ -43,6 +45,7 @@ export interface AppDependencies {
   endpointConfigRoutes?: EndpointConfigRouteDependencies;
   facetValidationRoutes?: FacetValidationRouteDependencies;
   facetPublicationRoutes?: FacetPublicationRouteDependencies;
+  publicCatalog?: PublicCatalog;
 }
 
 function hasErrorCode(error: unknown, code: string): boolean {
@@ -120,6 +123,9 @@ export async function buildApp(
       app,
       dependencies.facetPublicationRoutes,
     );
+  }
+  if (dependencies.publicCatalog) {
+    await registerPublicCatalogRoutes(app, dependencies.publicCatalog);
   }
 
   app.setErrorHandler((error, request, reply) => {
