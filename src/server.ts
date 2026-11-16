@@ -8,6 +8,7 @@ import { ActorAgentService } from "./facets/actor-agent-service.js";
 import { FacetDraftService } from "./facets/facet-draft-service.js";
 import { FacetPublicationService } from "./facets/facet-publication-service.js";
 import { FacetValidationService } from "./facets/facet-validation-service.js";
+import { FujiRegistryVerifier } from "./facets/fuji-registry-verifier.js";
 import { EndpointConfigService } from "./facets/endpoint-config-service.js";
 import { PostgresActorAgentStore } from "./facets/postgres-actor-agent-store.js";
 import { PostgresEndpointConfigStore } from "./facets/postgres-endpoint-config-store.js";
@@ -54,9 +55,16 @@ const facetDraftService = new FacetDraftService(
   new PostgresProviderStore(database.db),
   new PostgresFacetDraftStore(database.db),
 );
+const registryVerifier = config.FACET_ACTOR_REGISTRY_ADDRESS
+  ? new FujiRegistryVerifier(
+      config.FACET_FUJI_RPC_URL,
+      config.FACET_ACTOR_REGISTRY_ADDRESS,
+    )
+  : undefined;
 const actorAgentService = new ActorAgentService(
   new PostgresProviderStore(database.db),
   new PostgresActorAgentStore(database.db),
+  registryVerifier,
 );
 const secretService = new SecretService(
   new PostgresProviderStore(database.db),

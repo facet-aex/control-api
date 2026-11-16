@@ -38,6 +38,7 @@ export interface PublicFacet {
     runtime: string;
     imageDigest: string;
     registryTxHash?: string;
+    registryVerified?: boolean;
   };
   agentMeta?: {
     erc8004ChainId: 43113;
@@ -45,6 +46,7 @@ export interface PublicFacet {
     erc8004TokenId: string;
     taskKind: string;
     registryTxHash?: string;
+    registryVerified?: boolean;
   };
   publishedAt: string;
 }
@@ -221,6 +223,7 @@ export class PostgresPublicCatalog implements PublicCatalog {
             actorMeta: {
               runtime: ACTOR_RUNTIME_NAME,
               imageDigest: row.version.imageDigest,
+              registryVerified: row.version.registryVerified,
               ...(row.version.registryTxHash
                 ? { registryTxHash: row.version.registryTxHash }
                 : {}),
@@ -235,6 +238,7 @@ export class PostgresPublicCatalog implements PublicCatalog {
                 row.version.erc8004Registry ?? DEFAULT_ERC8004_REGISTRY,
               erc8004TokenId: row.version.erc8004TokenId,
               taskKind: row.version.agentTaskKind ?? "a2a-task",
+              registryVerified: row.version.registryVerified,
               ...(row.version.registryTxHash
                 ? { registryTxHash: row.version.registryTxHash }
                 : {}),

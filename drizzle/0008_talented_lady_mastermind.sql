@@ -1,0 +1,1 @@
+ALTER TABLE "facet_versions" ADD COLUMN "registry_verified" boolean DEFAULT false NOT NULL;

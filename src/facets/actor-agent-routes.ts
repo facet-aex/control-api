@@ -21,6 +21,7 @@ const txHashSchema = z
 
 const createActorSchema = z
   .object({
+    id: z.string().uuid().optional(),
     providerId: z.string().uuid(),
     name: z.string().trim().min(1).max(120),
     slug: slugSchema,
@@ -43,6 +44,7 @@ const createActorSchema = z
 
 const createAgentFacetSchema = z
   .object({
+    id: z.string().uuid().optional(),
     providerId: z.string().uuid(),
     name: z.string().trim().min(1).max(120),
     slug: slugSchema,
@@ -64,6 +66,11 @@ const createAgentFacetSchema = z
     payTo: addressSchema.optional(),
     registryTxHash: txHashSchema.optional(),
   })
+  .strict();
+
+const verifyRegistryParamsSchema = z.object({ facetId: z.string().uuid() });
+const verifyRegistryBodySchema = z
+  .object({ registryTxHash: txHashSchema })
   .strict();
 
 async function authenticate(
@@ -117,5 +124,18 @@ export async function registerActorAgentRoutes(
       request.id,
     );
     return reply.code(201).send({ facet });
+  });
+
+  app.post("/v1/facets/:facetId/verify-registry", async (request, reply) => {
+    const identity = await authenticate(request, dependencies.authenticator);
+    const { facetId } = verifyRegistryParamsSchema.parse(request.params);
+    const { registryTxHash } = verifyRegistryBodySchema.parse(request.body);
+    const result = await dependencies.service.verifyRegistry(
+      identity,
+      facetId,
+      registryTxHash,
+      request.id,
+    );
+    return reply.code(200).send(result);
   });
 }

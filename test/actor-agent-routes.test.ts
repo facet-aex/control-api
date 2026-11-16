@@ -14,13 +14,22 @@ import type {
   ActorAgentStore,
   PublishedActorRecord,
   PublishedAgentFacetRecord,
+  PublishedFacetRegistryContext,
 } from "../src/facets/actor-agent-types.js";
+import {
+  registrationMatches,
+  uuidToFacetKey,
+  type ExpectedFacetRegistration,
+  type RegistryVerifier,
+} from "../src/facets/fuji-registry-verifier.js";
 import { ProviderService } from "../src/providers/provider-service.js";
 import { InMemoryProviderStore } from "./in-memory-provider-store.js";
 
 class MemoryActorAgentStore implements ActorAgentStore {
   readonly actors: PublishedActorRecord[] = [];
   readonly agents: PublishedAgentFacetRecord[] = [];
+  readonly contexts = new Map<string, PublishedFacetRegistryContext>();
+  readonly verifiedTxs = new Map<string, string>();
   private readonly slugs = new Set<string>();
 
   async publishActor(
@@ -35,17 +44,31 @@ class MemoryActorAgentStore implements ActorAgentStore {
       );
     }
     this.slugs.add(key);
+    const facetId = input.command.id ?? randomUUID();
+    const versionId = randomUUID();
     const record: PublishedActorRecord = {
-      id: randomUUID(),
-      versionId: randomUUID(),
+      id: facetId,
+      versionId,
       slug: input.command.slug,
       facetType: "HOSTED_ACTOR",
       imageDigest: input.imageDigest,
+      registryVerified: input.registryVerified,
       status: "PUBLISHED",
       visibility: "PUBLIC",
       publishedAt: new Date("2026-11-16T12:00:00.000Z"),
     };
     this.actors.push(record);
+    this.contexts.set(facetId, {
+      facetId,
+      providerId: input.command.providerId,
+      versionId,
+      facetType: "HOSTED_ACTOR",
+      imageDigest: input.imageDigest,
+      pricingModel: input.command.pricingModel ?? "PAY_PER_RUN",
+      priceAtomic: input.command.priceAtomic ?? "1000",
+      payTo: input.payTo,
+      erc8004TokenId: null,
+    });
     return record;
   }
 
@@ -61,28 +84,80 @@ class MemoryActorAgentStore implements ActorAgentStore {
       );
     }
     this.slugs.add(key);
+    const facetId = input.command.id ?? randomUUID();
+    const versionId = randomUUID();
     const record: PublishedAgentFacetRecord = {
-      id: randomUUID(),
-      versionId: randomUUID(),
+      id: facetId,
+      versionId,
       slug: input.command.slug,
       facetType: "AUTONOMOUS_AGENT",
       erc8004TokenId: input.command.erc8004TokenId,
       erc8004Registry: input.erc8004Registry,
+      registryVerified: input.registryVerified,
       status: "PUBLISHED",
       visibility: "PUBLIC",
       publishedAt: new Date("2026-11-16T12:00:00.000Z"),
     };
     this.agents.push(record);
+    this.contexts.set(facetId, {
+      facetId,
+      providerId: input.command.providerId,
+      versionId,
+      facetType: "AUTONOMOUS_AGENT",
+      imageDigest: null,
+      pricingModel: input.command.pricingModel ?? "PAY_PER_RUN",
+      priceAtomic: input.command.priceAtomic ?? "1000",
+      payTo: input.payTo,
+      erc8004TokenId: input.command.erc8004TokenId,
+    });
     return record;
+  }
+
+  async getPublishedRegistryContext(
+    facetId: string,
+  ): Promise<PublishedFacetRegistryContext | undefined> {
+    return this.contexts.get(facetId);
+  }
+
+  async markRegistryVerified(input: {
+    actorUserId: string;
+    facetId: string;
+    versionId: string;
+    providerId: string;
+    registryTxHash: string;
+    requestId: string;
+  }): Promise<void> {
+    this.verifiedTxs.set(input.facetId, input.registryTxHash);
+  }
+}
+
+class StubRegistryVerifier implements RegistryVerifier {
+  validHash = `0x${"a".repeat(64)}`;
+  lastExpected: ExpectedFacetRegistration | null = null;
+
+  async verifyRegistration(
+    registryTxHash: string,
+    expected: ExpectedFacetRegistration,
+  ) {
+    this.lastExpected = expected;
+    if (registryTxHash === this.validHash) {
+      return { verified: true };
+    }
+    return {
+      verified: false,
+      reason: "On-chain imageDigest does not match the published Actor code.",
+    };
   }
 }
 
 let app: FastifyInstance;
 let store: MemoryActorAgentStore;
+let verifier: StubRegistryVerifier;
 
 beforeEach(async () => {
   const providers = new InMemoryProviderStore();
   store = new MemoryActorAgentStore();
+  verifier = new StubRegistryVerifier();
   const authenticator = new LocalAuthenticator();
   app = await buildApp({
     checkDatabase: async () => undefined,
@@ -94,7 +169,7 @@ beforeEach(async () => {
     },
     actorAgentRoutes: {
       authenticator,
-      service: new ActorAgentService(providers, store),
+      service: new ActorAgentService(providers, store, verifier),
     },
   });
 });
@@ -146,11 +221,129 @@ describe("1-step Hosted Actor and ERC-8004 A2A Agent publishing", () => {
         slug: "vn-gold-fx-actor",
         facetType: "HOSTED_ACTOR",
         imageDigest: computeActorImageDigest(code),
+        registryVerified: false,
         status: "PUBLISHED",
         visibility: "PUBLIC",
       },
     });
     expect(store.actors).toHaveLength(1);
+  });
+
+  it("verifies on-chain FacetActorRegistry transactions at publish and post-publish", async () => {
+    const providerId = await createProvider();
+    const facetId = randomUUID();
+    const code =
+      "export default async function run() { return [{ ok: true }]; }";
+
+    const invalidPublish = await app.inject({
+      method: "POST",
+      url: "/v1/actors",
+      headers: { "x-facet-dev-user": "alice" },
+      payload: {
+        id: facetId,
+        providerId,
+        name: "Bad Tx Actor",
+        slug: "bad-tx-actor",
+        description: "Should fail verification",
+        category: "vietnamese-data",
+        inputSchema: { type: "object" },
+        code,
+        registryTxHash: `0x${"b".repeat(64)}`,
+      },
+    });
+    expect(invalidPublish.statusCode).toBe(400);
+    expect(invalidPublish.json()).toMatchObject({
+      error: { code: "REGISTRY_VERIFICATION_FAILED" },
+    });
+
+    const published = await app.inject({
+      method: "POST",
+      url: "/v1/actors",
+      headers: { "x-facet-dev-user": "alice" },
+      payload: {
+        id: facetId,
+        providerId,
+        name: "Verified Actor",
+        slug: "verified-actor",
+        description: "Verified on Fuji",
+        category: "vietnamese-data",
+        inputSchema: { type: "object" },
+        code,
+      },
+    });
+    expect(published.statusCode).toBe(201);
+    expect(published.json().facet.registryVerified).toBe(false);
+
+    const verifyRes = await app.inject({
+      method: "POST",
+      url: `/v1/facets/${facetId}/verify-registry`,
+      headers: { "x-facet-dev-user": "alice" },
+      payload: { registryTxHash: verifier.validHash },
+    });
+    expect(verifyRes.statusCode).toBe(200);
+    expect(verifyRes.json()).toMatchObject({
+      facetId,
+      registryTxHash: verifier.validHash,
+      registryVerified: true,
+    });
+    expect(verifier.lastExpected?.imageDigest).toBe(
+      computeActorImageDigest(code),
+    );
+    expect(store.verifiedTxs.get(facetId)).toBe(verifier.validHash);
+  });
+
+  it("matches Fuji FacetActorRegistry event/state strictly against published metadata", () => {
+    const facetId = "019a6d2f-7b14-7000-8000-000000000001";
+    const code = "export default async function run() { return []; }";
+    const imageDigest = computeActorImageDigest(code);
+    const hexDigest = `0x${imageDigest.slice(7)}` as `0x${string}`;
+    const payTo = "0x9265c1c87fc5fb3c72dc68b4d3a005de1e22c3cf";
+
+    expect(
+      registrationMatches(
+        {
+          facetId: uuidToFacetKey(facetId),
+          facetType: 1,
+          imageDigest: hexDigest,
+          pricingModel: 0,
+          priceAtomic: 1000n,
+          payTo,
+          erc8004TokenId: 0n,
+          active: true,
+        },
+        {
+          facetId,
+          facetType: "HOSTED_ACTOR",
+          imageDigest,
+          pricingModel: "PAY_PER_RUN",
+          priceAtomic: "1000",
+          payTo,
+        },
+      ),
+    ).toEqual({ verified: true });
+
+    expect(
+      registrationMatches(
+        {
+          facetId: uuidToFacetKey(facetId),
+          facetType: 1,
+          imageDigest: `0x${"0".repeat(64)}`,
+          pricingModel: 0,
+          priceAtomic: 1000n,
+          payTo,
+          erc8004TokenId: 0n,
+          active: true,
+        },
+        {
+          facetId,
+          facetType: "HOSTED_ACTOR",
+          imageDigest,
+          pricingModel: "PAY_PER_RUN",
+          priceAtomic: "1000",
+          payTo,
+        },
+      ).verified,
+    ).toBe(false);
   });
 
   it("rejects actor code missing an exported entrypoint", async () => {

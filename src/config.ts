@@ -86,6 +86,17 @@ const environmentSchema = z.object({
   CLERK_SECRET_KEY: optionalNonEmptyString,
   CLERK_JWT_KEY: optionalNonEmptyString,
   CLERK_JWT_ISSUER: optionalUrl,
+  FACET_FUJI_RPC_URL: z
+    .string()
+    .url()
+    .default("https://api.avax-test.network/ext/bc/C/rpc"),
+  FACET_ACTOR_REGISTRY_ADDRESS: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z
+      .string()
+      .regex(/^0x[a-fA-F0-9]{40}$/u)
+      .optional(),
+  ),
 });
 
 export type AppConfig = z.infer<typeof environmentSchema>;

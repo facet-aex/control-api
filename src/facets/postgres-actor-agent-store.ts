@@ -7,16 +7,19 @@ import {
   auditEvents,
   facets,
   facetVersions,
+  providers,
 } from "../db/schema.js";
 import { AppError } from "../errors.js";
 import { hashFacetManifest } from "./facet-manifest.js";
 import {
   ACTOR_RUNTIME_NAME,
+  DEFAULT_PAY_TO,
   FUJI_CHAIN_ID,
   FUSD_ASSET_ADDRESS,
   type ActorAgentStore,
   type PublishedActorRecord,
   type PublishedAgentFacetRecord,
+  type PublishedFacetRegistryContext,
 } from "./actor-agent-types.js";
 
 function isUniqueViolation(error: unknown): boolean {
@@ -74,6 +77,7 @@ export class PostgresActorAgentStore implements ActorAgentStore {
           ).rows,
           "Actor identifiers",
         );
+        const facetId = command.id ?? ids.facet_id;
 
         await transaction.insert(apiSources).values({
           id: ids.source_id,
@@ -109,7 +113,7 @@ export class PostgresActorAgentStore implements ActorAgentStore {
         };
         const manifest = {
           schemaVersion: "facet.manifest/v1" as const,
-          facetId: ids.facet_id,
+          facetId,
           versionId: ids.version_id,
           displayVersion: "1.0.0",
           providerId: command.providerId,
@@ -153,7 +157,7 @@ export class PostgresActorAgentStore implements ActorAgentStore {
         const now = new Date();
 
         await transaction.insert(facets).values({
-          id: ids.facet_id,
+          id: facetId,
           providerId: command.providerId,
           type: "hosted_actor",
           slug: command.slug,
@@ -167,7 +171,7 @@ export class PostgresActorAgentStore implements ActorAgentStore {
 
         await transaction.insert(facetVersions).values({
           id: ids.version_id,
-          facetId: ids.facet_id,
+          facetId,
           displayVersion: "1.0.0",
           status: "published",
           sourceVersionId: ids.source_version_id,
@@ -185,6 +189,7 @@ export class PostgresActorAgentStore implements ActorAgentStore {
           priceAtomic,
           payTo: input.payTo,
           registryTxHash: command.registryTxHash ?? null,
+          registryVerified: input.registryVerified,
           createdBy: input.actorUserId,
           publishedAt: now,
           publishedBy: input.actorUserId,
@@ -193,29 +198,31 @@ export class PostgresActorAgentStore implements ActorAgentStore {
         await transaction
           .update(facets)
           .set({ currentPublishedVersionId: ids.version_id, updatedAt: now })
-          .where(eq(facets.id, ids.facet_id));
+          .where(eq(facets.id, facetId));
 
         await transaction.insert(auditEvents).values({
           actorUserId: input.actorUserId,
           providerId: command.providerId,
           eventType: "actor.published",
           subjectType: "facet",
-          subjectId: ids.facet_id,
+          subjectId: facetId,
           requestId: input.requestId,
           metadata: {
             facetVersionId: ids.version_id,
             imageDigest: input.imageDigest,
             pricingModel,
             priceAtomic,
+            registryVerified: input.registryVerified,
           },
         });
 
         return {
-          id: ids.facet_id,
+          id: facetId,
           versionId: ids.version_id,
           slug: command.slug,
           facetType: "HOSTED_ACTOR",
           imageDigest: input.imageDigest,
+          registryVerified: input.registryVerified,
           status: "PUBLISHED",
           visibility: "PUBLIC",
           publishedAt: now,
@@ -226,7 +233,7 @@ export class PostgresActorAgentStore implements ActorAgentStore {
       if (isUniqueViolation(error)) {
         throw new AppError(
           "RESOURCE_CONFLICT",
-          "An Actor with this slug already exists.",
+          "An Actor with this ID or slug already exists.",
           409,
         );
       }
@@ -271,6 +278,7 @@ export class PostgresActorAgentStore implements ActorAgentStore {
           ).rows,
           "Agent Facet identifiers",
         );
+        const facetId = command.id ?? ids.facet_id;
 
         await transaction.insert(apiSources).values({
           id: ids.source_id,
@@ -303,7 +311,7 @@ export class PostgresActorAgentStore implements ActorAgentStore {
         };
         const manifest = {
           schemaVersion: "facet.manifest/v1" as const,
-          facetId: ids.facet_id,
+          facetId,
           versionId: ids.version_id,
           displayVersion: "1.0.0",
           providerId: command.providerId,
@@ -349,7 +357,7 @@ export class PostgresActorAgentStore implements ActorAgentStore {
         const now = new Date();
 
         await transaction.insert(facets).values({
-          id: ids.facet_id,
+          id: facetId,
           providerId: command.providerId,
           type: "autonomous_agent",
           slug: command.slug,
@@ -363,7 +371,7 @@ export class PostgresActorAgentStore implements ActorAgentStore {
 
         await transaction.insert(facetVersions).values({
           id: ids.version_id,
-          facetId: ids.facet_id,
+          facetId,
           displayVersion: "1.0.0",
           status: "published",
           sourceVersionId: ids.source_version_id,
@@ -383,6 +391,7 @@ export class PostgresActorAgentStore implements ActorAgentStore {
           erc8004Registry: input.erc8004Registry,
           agentTaskKind: command.taskKind,
           registryTxHash: command.registryTxHash ?? null,
+          registryVerified: input.registryVerified,
           createdBy: input.actorUserId,
           publishedAt: now,
           publishedBy: input.actorUserId,
@@ -391,30 +400,32 @@ export class PostgresActorAgentStore implements ActorAgentStore {
         await transaction
           .update(facets)
           .set({ currentPublishedVersionId: ids.version_id, updatedAt: now })
-          .where(eq(facets.id, ids.facet_id));
+          .where(eq(facets.id, facetId));
 
         await transaction.insert(auditEvents).values({
           actorUserId: input.actorUserId,
           providerId: command.providerId,
           eventType: "agent_facet.published",
           subjectType: "facet",
-          subjectId: ids.facet_id,
+          subjectId: facetId,
           requestId: input.requestId,
           metadata: {
             facetVersionId: ids.version_id,
             erc8004TokenId: command.erc8004TokenId,
             erc8004Registry: input.erc8004Registry,
             taskKind: command.taskKind,
+            registryVerified: input.registryVerified,
           },
         });
 
         return {
-          id: ids.facet_id,
+          id: facetId,
           versionId: ids.version_id,
           slug: command.slug,
           facetType: "AUTONOMOUS_AGENT",
           erc8004TokenId: command.erc8004TokenId,
           erc8004Registry: input.erc8004Registry,
+          registryVerified: input.registryVerified,
           status: "PUBLISHED",
           visibility: "PUBLIC",
           publishedAt: now,
@@ -425,11 +436,95 @@ export class PostgresActorAgentStore implements ActorAgentStore {
       if (isUniqueViolation(error)) {
         throw new AppError(
           "RESOURCE_CONFLICT",
-          "An Agent Facet with this slug already exists.",
+          "An Agent Facet with this ID or slug already exists.",
           409,
         );
       }
       throw error;
     }
+  }
+
+  async getPublishedRegistryContext(
+    facetId: string,
+  ): Promise<PublishedFacetRegistryContext | undefined> {
+    const rows = await this.database
+      .select({
+        facetId: facets.id,
+        providerId: facets.providerId,
+        facetType: facets.type,
+        versionId: facetVersions.id,
+        imageDigest: facetVersions.imageDigest,
+        pricingModel: facetVersions.pricingModel,
+        priceAtomic: facetVersions.priceAtomic,
+        payTo: facetVersions.payTo,
+        providerWallet: providers.walletAddress,
+        erc8004TokenId: facetVersions.erc8004TokenId,
+      })
+      .from(facets)
+      .innerJoin(
+        facetVersions,
+        eq(facets.currentPublishedVersionId, facetVersions.id),
+      )
+      .innerJoin(providers, eq(facets.providerId, providers.id))
+      .where(and(eq(facets.id, facetId), eq(facets.status, "published")))
+      .limit(1);
+
+    const row = rows[0];
+    if (!row) return undefined;
+
+    const mappedType =
+      row.facetType === "hosted_actor"
+        ? "HOSTED_ACTOR"
+        : row.facetType === "autonomous_agent"
+          ? "AUTONOMOUS_AGENT"
+          : "EXTERNAL_HTTP_API";
+
+    return {
+      facetId: row.facetId,
+      providerId: row.providerId,
+      versionId: row.versionId,
+      facetType: mappedType,
+      imageDigest: row.imageDigest,
+      pricingModel:
+        row.pricingModel === "PAY_PER_RESULT"
+          ? "PAY_PER_RESULT"
+          : "PAY_PER_RUN",
+      priceAtomic: row.priceAtomic,
+      payTo: row.payTo ?? row.providerWallet ?? DEFAULT_PAY_TO,
+      erc8004TokenId: row.erc8004TokenId,
+    };
+  }
+
+  async markRegistryVerified(input: {
+    actorUserId: string;
+    facetId: string;
+    versionId: string;
+    providerId: string;
+    registryTxHash: string;
+    requestId: string;
+  }): Promise<void> {
+    await this.database.transaction(async (transaction) => {
+      await transaction
+        .update(facetVersions)
+        .set({
+          registryTxHash: input.registryTxHash,
+          registryVerified: true,
+          updatedAt: new Date(),
+        })
+        .where(eq(facetVersions.id, input.versionId));
+
+      await transaction.insert(auditEvents).values({
+        actorUserId: input.actorUserId,
+        providerId: input.providerId,
+        eventType: "facet.registry_verified",
+        subjectType: "facet",
+        subjectId: input.facetId,
+        requestId: input.requestId,
+        metadata: {
+          facetVersionId: input.versionId,
+          registryTxHash: input.registryTxHash,
+        },
+      });
+    });
   }
 }

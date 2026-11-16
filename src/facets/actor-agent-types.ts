@@ -9,6 +9,7 @@ export const ACTOR_RUNNER_IMAGE = "facet/node-actor-runner:1.0";
 export const ACTOR_RUNTIME_NAME = "nodejs22-alpine-v1";
 
 export interface CreateActorCommand {
+  id?: string | undefined;
   providerId: string;
   name: string;
   slug: string;
@@ -31,12 +32,14 @@ export interface PublishedActorRecord {
   slug: string;
   facetType: "HOSTED_ACTOR";
   imageDigest: string;
+  registryVerified: boolean;
   status: "PUBLISHED";
   visibility: "PUBLIC";
   publishedAt: Date;
 }
 
 export interface CreateAgentFacetCommand {
+  id?: string | undefined;
   providerId: string;
   name: string;
   slug: string;
@@ -63,9 +66,22 @@ export interface PublishedAgentFacetRecord {
   facetType: "AUTONOMOUS_AGENT";
   erc8004TokenId: string;
   erc8004Registry: string;
+  registryVerified: boolean;
   status: "PUBLISHED";
   visibility: "PUBLIC";
   publishedAt: Date;
+}
+
+export interface PublishedFacetRegistryContext {
+  facetId: string;
+  providerId: string;
+  versionId: string;
+  facetType: "EXTERNAL_HTTP_API" | "HOSTED_ACTOR" | "AUTONOMOUS_AGENT";
+  imageDigest: string | null;
+  pricingModel: PricingModel;
+  priceAtomic: string;
+  payTo: string;
+  erc8004TokenId: string | null;
 }
 
 export interface ActorAgentStore {
@@ -75,6 +91,7 @@ export interface ActorAgentStore {
     imageDigest: string;
     codeSha256: string;
     payTo: string;
+    registryVerified: boolean;
     requestId: string;
   }): Promise<PublishedActorRecord>;
   publishAgentFacet(input: {
@@ -83,6 +100,18 @@ export interface ActorAgentStore {
     erc8004Registry: string;
     codeSha256: string;
     payTo: string;
+    registryVerified: boolean;
     requestId: string;
   }): Promise<PublishedAgentFacetRecord>;
+  getPublishedRegistryContext(
+    facetId: string,
+  ): Promise<PublishedFacetRegistryContext | undefined>;
+  markRegistryVerified(input: {
+    actorUserId: string;
+    facetId: string;
+    versionId: string;
+    providerId: string;
+    registryTxHash: string;
+    requestId: string;
+  }): Promise<void>;
 }

@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
+  boolean,
   index,
   integer,
   jsonb,
@@ -394,6 +395,7 @@ export const facetVersions = pgTable(
     erc8004Registry: text("erc8004_registry"),
     agentTaskKind: text("agent_task_kind"),
     registryTxHash: text("registry_tx_hash"),
+    registryVerified: boolean("registry_verified").notNull().default(false),
     createdBy: uuid("created_by")
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),

@@ -14,6 +14,7 @@ import {
   type CreateActorCommand,
   type CreateAgentFacetCommand,
 } from "./actor-agent-types.js";
+import type { RegistryVerifier } from "./fuji-registry-verifier.js";
 
 const schemaAjv = new Ajv2020({
   allErrors: true,
@@ -63,6 +64,7 @@ export class ActorAgentService {
   constructor(
     private readonly providers: ProviderStore,
     private readonly store: ActorAgentStore,
+    private readonly registryVerifier?: RegistryVerifier,
   ) {}
 
   async publishActor(
@@ -94,12 +96,45 @@ export class ActorAgentService {
       .update(command.code.trim(), "utf8")
       .digest("hex");
 
+    let registryVerified = false;
+    if (command.registryTxHash) {
+      if (!command.id) {
+        throw new AppError(
+          "INPUT_INVALID",
+          "Supplying registryTxHash at publish time requires explicit facet `id` matching the on-chain FacetActorRegistry key, or call POST /v1/facets/:facetId/verify-registry after publishing.",
+          400,
+        );
+      }
+      if (this.registryVerifier) {
+        const result = await this.registryVerifier.verifyRegistration(
+          command.registryTxHash,
+          {
+            facetId: command.id,
+            facetType: "HOSTED_ACTOR",
+            imageDigest,
+            pricingModel: command.pricingModel ?? "PAY_PER_RUN",
+            priceAtomic: command.priceAtomic ?? "1000",
+            payTo,
+          },
+        );
+        if (!result.verified) {
+          throw new AppError(
+            "REGISTRY_VERIFICATION_FAILED",
+            result.reason ?? "On-chain FacetActorRegistry verification failed.",
+            400,
+          );
+        }
+        registryVerified = true;
+      }
+    }
+
     const published = await this.store.publishActor({
       actorUserId: actor.id,
       command,
       imageDigest,
       codeSha256,
       payTo,
+      registryVerified,
       requestId,
     });
 
@@ -142,18 +177,120 @@ export class ActorAgentService {
       )
       .digest("hex");
 
+    let registryVerified = false;
+    if (command.registryTxHash) {
+      if (!command.id) {
+        throw new AppError(
+          "INPUT_INVALID",
+          "Supplying registryTxHash at publish time requires explicit facet `id` matching the on-chain FacetActorRegistry key, or call POST /v1/facets/:facetId/verify-registry after publishing.",
+          400,
+        );
+      }
+      if (this.registryVerifier) {
+        const result = await this.registryVerifier.verifyRegistration(
+          command.registryTxHash,
+          {
+            facetId: command.id,
+            facetType: "AUTONOMOUS_AGENT",
+            pricingModel: command.pricingModel ?? "PAY_PER_RUN",
+            priceAtomic: command.priceAtomic ?? "1000",
+            payTo,
+            erc8004TokenId: command.erc8004TokenId,
+          },
+        );
+        if (!result.verified) {
+          throw new AppError(
+            "REGISTRY_VERIFICATION_FAILED",
+            result.reason ?? "On-chain FacetActorRegistry verification failed.",
+            400,
+          );
+        }
+        registryVerified = true;
+      }
+    }
+
     const published = await this.store.publishAgentFacet({
       actorUserId: actor.id,
       command,
       erc8004Registry,
       codeSha256,
       payTo,
+      registryVerified,
       requestId,
     });
 
     return {
       ...published,
       publishedAt: published.publishedAt.toISOString(),
+    };
+  }
+
+  async verifyRegistry(
+    identity: AuthenticatedIdentity,
+    facetId: string,
+    registryTxHash: string,
+    requestId: string,
+  ) {
+    if (!this.registryVerifier) {
+      throw new AppError(
+        "REGISTRY_VERIFIER_UNCONFIGURED",
+        "Fuji FacetActorRegistry verification is not configured on this Control API instance.",
+        503,
+      );
+    }
+
+    const actor = await this.providers.upsertUser(identity);
+    const context = await this.store.getPublishedRegistryContext(facetId);
+    if (!context) {
+      throw new AppError(
+        "RESOURCE_NOT_FOUND",
+        "Published Facet not found.",
+        404,
+      );
+    }
+
+    const role = await this.providers.getMembershipRole(
+      context.providerId,
+      actor.id,
+    );
+    requireProviderPermission(role, "facet:write");
+
+    const verification = await this.registryVerifier.verifyRegistration(
+      registryTxHash,
+      {
+        facetId: context.facetId,
+        facetType: context.facetType,
+        imageDigest: context.imageDigest,
+        pricingModel: context.pricingModel,
+        priceAtomic: context.priceAtomic,
+        payTo: context.payTo,
+        erc8004TokenId: context.erc8004TokenId,
+      },
+    );
+
+    if (!verification.verified) {
+      throw new AppError(
+        "REGISTRY_VERIFICATION_FAILED",
+        verification.reason ??
+          "On-chain FacetActorRegistry verification failed.",
+        400,
+      );
+    }
+
+    await this.store.markRegistryVerified({
+      actorUserId: actor.id,
+      facetId: context.facetId,
+      versionId: context.versionId,
+      providerId: context.providerId,
+      registryTxHash,
+      requestId,
+    });
+
+    return {
+      facetId: context.facetId,
+      versionId: context.versionId,
+      registryTxHash,
+      registryVerified: true,
     };
   }
 }
