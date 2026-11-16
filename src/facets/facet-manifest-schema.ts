@@ -31,7 +31,9 @@ export const facetManifestSchema = {
     versionId: { type: "string", format: "uuid" },
     displayVersion: { type: "string", minLength: 1 },
     providerId: { type: "string", format: "uuid" },
-    type: { const: "EXTERNAL_HTTP_API" },
+    type: {
+      enum: ["EXTERNAL_HTTP_API", "HOSTED_ACTOR", "AUTONOMOUS_AGENT"],
+    },
     name: { type: "string", minLength: 1, maxLength: 120 },
     slug: {
       type: "string",
@@ -117,12 +119,63 @@ export const facetManifestSchema = {
         configured: { type: "boolean" },
       },
     },
+    pricing: {
+      type: "object",
+      additionalProperties: false,
+      required: ["model", "priceAtomic", "assetAddress", "chainId", "payTo"],
+      properties: {
+        model: { enum: ["PAY_PER_RUN", "PAY_PER_RESULT"] },
+        priceAtomic: { type: "string", pattern: "^[0-9]+$" },
+        assetAddress: {
+          type: "string",
+          pattern: "^0x[a-fA-F0-9]{40}$",
+        },
+        chainId: { const: 43113 },
+        payTo: { type: "string", pattern: "^0x[a-fA-F0-9]{40}$" },
+      },
+    },
+    actorConfig: {
+      type: "object",
+      additionalProperties: false,
+      required: ["runtime", "entrypoint", "imageDigest"],
+      properties: {
+        runtime: { type: "string", minLength: 1 },
+        entrypoint: { type: "string", minLength: 1 },
+        imageDigest: {
+          type: "string",
+          pattern: "^sha256:[a-f0-9]{64}$",
+        },
+      },
+    },
+    agentConfig: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "erc8004ChainId",
+        "erc8004Registry",
+        "erc8004TokenId",
+        "a2aProtocolVersion",
+        "taskKind",
+      ],
+      properties: {
+        erc8004ChainId: { const: 43113 },
+        erc8004Registry: {
+          type: "string",
+          pattern: "^0x[a-fA-F0-9]{40}$",
+        },
+        erc8004TokenId: { type: "string", pattern: "^[0-9]+$" },
+        a2aProtocolVersion: { type: "string", minLength: 1 },
+        taskKind: { type: "string", minLength: 1 },
+      },
+    },
     provenance: {
       type: "object",
       additionalProperties: false,
       required: ["sourceType", "sourceVersionId", "sourceOperationPointer"],
       properties: {
-        sourceType: { const: "OPENAPI" },
+        sourceType: {
+          enum: ["OPENAPI", "ACTOR_TEMPLATE", "A2A_AGENT_CARD"],
+        },
         sourceVersionId: { type: "string", format: "uuid" },
         sourceOperationPointer: { type: "string", pattern: "^#/" },
       },

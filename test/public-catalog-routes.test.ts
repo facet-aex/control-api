@@ -14,6 +14,7 @@ const facet: PublicFacet = {
   description: "Current weather",
   category: "Data",
   tags: [],
+  facetType: "EXTERNAL_HTTP_API",
   provider: { id: randomUUID(), name: "Example", slug: "example" },
   displayVersion: "1.0.0",
   method: "GET",
@@ -22,7 +23,8 @@ const facet: PublicFacet = {
   publishedAt: new Date().toISOString(),
 };
 const catalog: PublicCatalog = {
-  async list(query, limit) {
+  async list(query, limit, filters) {
+    if (filters?.type && filters.type !== facet.facetType) return [];
     return query === "Weather" && limit === 1 ? [facet] : [];
   },
   async get(id) {
@@ -40,7 +42,7 @@ describe("public catalog routes", () => {
     });
     const list = await app.inject({
       method: "GET",
-      url: "/v1/catalog/facets?q=Weather&limit=1",
+      url: "/v1/catalog/facets?q=Weather&limit=1&type=EXTERNAL_HTTP_API",
     });
     expect(list.statusCode).toBe(200);
     expect(list.json()).toEqual({ facets: [facet] });
@@ -65,6 +67,14 @@ describe("public catalog routes", () => {
     expect(
       (await app.inject({ method: "GET", url: "/v1/catalog/facets?limit=51" }))
         .statusCode,
+    ).toBe(400);
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: "/v1/catalog/facets?type=INVALID_TYPE",
+        })
+      ).statusCode,
     ).toBe(400);
     expect(
       (

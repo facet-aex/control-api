@@ -42,7 +42,11 @@ export const facetVersionStatus = pgEnum("facet_version_status", [
   "published",
   "disabled",
 ]);
-export const facetType = pgEnum("facet_type", ["external_http_api"]);
+export const facetType = pgEnum("facet_type", [
+  "external_http_api",
+  "hosted_actor",
+  "autonomous_agent",
+]);
 export const facetVisibility = pgEnum("facet_visibility", [
   "private",
   "unlisted",
@@ -381,6 +385,15 @@ export const facetVersions = pgTable(
     operation: jsonb("operation").notNull(),
     inputSchema: jsonb("input_schema").notNull(),
     outputSchema: jsonb("output_schema").notNull(),
+    actorCode: text("actor_code"),
+    imageDigest: text("image_digest"),
+    pricingModel: text("pricing_model").notNull().default("PAY_PER_RUN"),
+    priceAtomic: text("price_atomic").notNull().default("1000"),
+    payTo: text("pay_to"),
+    erc8004TokenId: text("erc8004_token_id"),
+    erc8004Registry: text("erc8004_registry"),
+    agentTaskKind: text("agent_task_kind"),
+    registryTxHash: text("registry_tx_hash"),
     createdBy: uuid("created_by")
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),

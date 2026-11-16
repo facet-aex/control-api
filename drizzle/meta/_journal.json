@@ -50,6 +50,13 @@
       "when": 1794296841965,
       "tag": "0006_gifted_whizzer",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1794806532938,
+      "tag": "0007_neat_meltdown",
+      "breakpoints": true
     }
   ]
 }

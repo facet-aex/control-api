@@ -6,6 +6,10 @@ import { AppError } from "./errors.js";
 import { registerPublicCatalogRoutes } from "./facets/public-catalog-routes.js";
 import type { PublicCatalog } from "./facets/public-catalog.js";
 import {
+  registerActorAgentRoutes,
+  type ActorAgentRouteDependencies,
+} from "./facets/actor-agent-routes.js";
+import {
   registerFacetDraftRoutes,
   type FacetDraftRouteDependencies,
 } from "./facets/facet-draft-routes.js";
@@ -41,6 +45,7 @@ export interface AppDependencies {
   providerRoutes?: ProviderRouteDependencies;
   importRoutes?: ImportRouteDependencies;
   facetDraftRoutes?: FacetDraftRouteDependencies;
+  actorAgentRoutes?: ActorAgentRouteDependencies;
   secretRoutes?: SecretRouteDependencies;
   endpointConfigRoutes?: EndpointConfigRouteDependencies;
   facetValidationRoutes?: FacetValidationRouteDependencies;
@@ -105,6 +110,9 @@ export async function buildApp(
   }
   if (dependencies.facetDraftRoutes) {
     await registerFacetDraftRoutes(app, dependencies.facetDraftRoutes);
+  }
+  if (dependencies.actorAgentRoutes) {
+    await registerActorAgentRoutes(app, dependencies.actorAgentRoutes);
   }
   if (dependencies.secretRoutes) {
     await registerSecretRoutes(app, dependencies.secretRoutes);

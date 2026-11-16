@@ -1,6 +1,17 @@
 import { and, desc, eq } from "drizzle-orm";
 import type { Database } from "../db/client.js";
 import { facets, facetVersions, providers } from "../db/schema.js";
+import {
+  ACTOR_RUNTIME_NAME,
+  DEFAULT_ERC8004_REGISTRY,
+  DEFAULT_PAY_TO,
+  FUJI_CHAIN_ID,
+  FUSD_ASSET_ADDRESS,
+  type PricingModel,
+} from "./actor-agent-types.js";
+
+export type FacetType =
+  "EXTERNAL_HTTP_API" | "HOSTED_ACTOR" | "AUTONOMOUS_AGENT";
 
 export interface PublicFacet {
   id: string;
@@ -10,16 +21,45 @@ export interface PublicFacet {
   description: string;
   category: string;
   tags: string[];
+  facetType?: FacetType;
   provider: { id: string; name: string; slug: string };
   displayVersion: string;
   method: string;
   inputSchema: unknown;
   outputSchema: unknown;
+  pricing?: {
+    model: PricingModel;
+    priceAtomic: string;
+    assetAddress: string;
+    chainId: 43113;
+    payTo: string;
+  };
+  actorMeta?: {
+    runtime: string;
+    imageDigest: string;
+    registryTxHash?: string;
+  };
+  agentMeta?: {
+    erc8004ChainId: 43113;
+    erc8004Registry: string;
+    erc8004TokenId: string;
+    taskKind: string;
+    registryTxHash?: string;
+  };
   publishedAt: string;
 }
 
+export interface CatalogListFilters {
+  type?: FacetType | undefined;
+  category?: string | undefined;
+}
+
 export interface PublicCatalog {
-  list(query: string, limit: number): Promise<PublicFacet[]>;
+  list(
+    query: string,
+    limit: number,
+    filters?: CatalogListFilters,
+  ): Promise<PublicFacet[]>;
   get(id: string): Promise<PublicFacet | undefined>;
 }
 
@@ -50,6 +90,12 @@ const ignoredWords = new Set([
 const synonyms: Record<string, string> = {
   btc: "bitcoin",
   gia: "price",
+  vang: "gold",
+  ty: "fx",
+  tin: "news",
+  tuc: "news",
+  thi: "market",
+  truong: "market",
   duong: "chart",
   lich: "historical",
   su: "historical",
@@ -85,6 +131,20 @@ export function relevance(
   );
 }
 
+function toPublicFacetType(dbType: string): FacetType {
+  if (dbType === "hosted_actor") return "HOSTED_ACTOR";
+  if (dbType === "autonomous_agent") return "AUTONOMOUS_AGENT";
+  return "EXTERNAL_HTTP_API";
+}
+
+function toDbFacetType(
+  facetType: FacetType,
+): "external_http_api" | "hosted_actor" | "autonomous_agent" {
+  if (facetType === "HOSTED_ACTOR") return "hosted_actor";
+  if (facetType === "AUTONOMOUS_AGENT") return "autonomous_agent";
+  return "external_http_api";
+}
+
 export class PostgresPublicCatalog implements PublicCatalog {
   constructor(private readonly db: Database["db"]) {}
 
@@ -99,13 +159,20 @@ export class PostgresPublicCatalog implements PublicCatalog {
       .innerJoin(providers, eq(facets.providerId, providers.id));
   }
 
-  private visible() {
-    return and(
+  private visible(filters?: CatalogListFilters) {
+    const conditions = [
       eq(facets.status, "published"),
       eq(facets.visibility, "public"),
       eq(facetVersions.status, "published"),
       eq(providers.status, "active"),
-    );
+    ];
+    if (filters?.type) {
+      conditions.push(eq(facets.type, toDbFacetType(filters.type)));
+    }
+    if (filters?.category) {
+      conditions.push(eq(facets.category, filters.category));
+    }
+    return and(...conditions);
   }
 
   private map(
@@ -114,6 +181,14 @@ export class PostgresPublicCatalog implements PublicCatalog {
     >[number],
   ): PublicFacet {
     const operation = row.version.operation as { method?: string };
+    const mappedType = toPublicFacetType(row.facet.type);
+    const pricingModel: PricingModel =
+      row.version.pricingModel === "PAY_PER_RESULT"
+        ? "PAY_PER_RESULT"
+        : "PAY_PER_RUN";
+    const payTo =
+      row.version.payTo ?? row.provider.walletAddress ?? DEFAULT_PAY_TO;
+
     return {
       id: row.facet.id,
       versionId: row.version.id,
@@ -122,23 +197,62 @@ export class PostgresPublicCatalog implements PublicCatalog {
       description: row.facet.description,
       category: row.facet.category,
       tags: row.facet.tags,
+      facetType: mappedType,
       provider: {
         id: row.provider.id,
         name: row.provider.name,
         slug: row.provider.slug,
       },
       displayVersion: row.version.displayVersion,
-      method: operation.method ?? "GET",
+      method:
+        operation.method ??
+        (mappedType === "EXTERNAL_HTTP_API" ? "GET" : "POST"),
       inputSchema: row.version.inputSchema,
       outputSchema: row.version.outputSchema,
+      pricing: {
+        model: pricingModel,
+        priceAtomic: row.version.priceAtomic,
+        assetAddress: FUSD_ASSET_ADDRESS,
+        chainId: FUJI_CHAIN_ID,
+        payTo,
+      },
+      ...(mappedType === "HOSTED_ACTOR" && row.version.imageDigest
+        ? {
+            actorMeta: {
+              runtime: ACTOR_RUNTIME_NAME,
+              imageDigest: row.version.imageDigest,
+              ...(row.version.registryTxHash
+                ? { registryTxHash: row.version.registryTxHash }
+                : {}),
+            },
+          }
+        : {}),
+      ...(mappedType === "AUTONOMOUS_AGENT" && row.version.erc8004TokenId
+        ? {
+            agentMeta: {
+              erc8004ChainId: FUJI_CHAIN_ID,
+              erc8004Registry:
+                row.version.erc8004Registry ?? DEFAULT_ERC8004_REGISTRY,
+              erc8004TokenId: row.version.erc8004TokenId,
+              taskKind: row.version.agentTaskKind ?? "a2a-task",
+              ...(row.version.registryTxHash
+                ? { registryTxHash: row.version.registryTxHash }
+                : {}),
+            },
+          }
+        : {}),
       publishedAt: row.version.publishedAt!.toISOString(),
     };
   }
 
-  async list(query: string, limit: number): Promise<PublicFacet[]> {
+  async list(
+    query: string,
+    limit: number,
+    filters?: CatalogListFilters,
+  ): Promise<PublicFacet[]> {
     const terms = searchTerms(query.trim());
     const rows = await this.base()
-      .where(this.visible())
+      .where(this.visible(filters))
       .orderBy(desc(facetVersions.publishedAt), desc(facets.id))
       .limit(200);
     const matches = rows.map((row) => this.map(row));
