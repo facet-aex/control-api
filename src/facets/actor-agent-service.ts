@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { Ajv2020 } from "ajv/dist/2020.js";
+import { getAddress } from "viem";
 
 import type { AuthenticatedIdentity } from "../auth/types.js";
 import { AppError } from "../errors.js";
@@ -64,7 +65,10 @@ export class ActorAgentService {
   constructor(
     private readonly providers: ProviderStore,
     private readonly store: ActorAgentStore,
-    private readonly registryVerifier?: RegistryVerifier,
+    private readonly registryVerifier: RegistryVerifier | undefined,
+    private readonly options: {
+      environment: "local" | "preview" | "production";
+    },
   ) {}
 
   async publishActor(
@@ -90,7 +94,29 @@ export class ActorAgentService {
       throw new AppError("RESOURCE_NOT_FOUND", "Provider not found.", 404);
     }
 
-    const payTo = command.payTo ?? provider.walletAddress ?? DEFAULT_PAY_TO;
+    if (this.options.environment !== "local") {
+      if (!provider.walletAddress || !provider.walletVerifiedAt) {
+        throw new AppError(
+          "WALLET_PROOF_REQUIRED",
+          "Link a verified payout wallet before publishing an Actor.",
+          403,
+        );
+      }
+      if (
+        command.payTo &&
+        getAddress(command.payTo) !== getAddress(provider.walletAddress)
+      ) {
+        throw new AppError(
+          "PAYOUT_MISMATCH",
+          "Actor payout must match the verified provider wallet.",
+          403,
+        );
+      }
+    }
+    const payTo =
+      this.options.environment === "local"
+        ? (command.payTo ?? provider.walletAddress ?? DEFAULT_PAY_TO)
+        : provider.walletAddress!;
     const imageDigest = computeActorImageDigest(command.code);
     const codeSha256 = createHash("sha256")
       .update(command.code.trim(), "utf8")

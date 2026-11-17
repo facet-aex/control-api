@@ -35,7 +35,7 @@ const config = readConfig();
 const database = createDatabase(config.DATABASE_URL);
 const providerService = new ProviderService(
   new PostgresProviderStore(database.db),
-  { environment: config.FACET_ENV },
+  { environment: config.FACET_ENV, challengeDomain: config.WEB_ORIGIN },
 );
 const authenticator = createAuthenticator(config);
 const importService = new ImportService(
@@ -66,6 +66,7 @@ const actorAgentService = new ActorAgentService(
   new PostgresProviderStore(database.db),
   new PostgresActorAgentStore(database.db),
   registryVerifier,
+  { environment: config.FACET_ENV },
 );
 const secretService = new SecretService(
   new PostgresProviderStore(database.db),

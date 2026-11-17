@@ -1,6 +1,10 @@
 import { AppError } from "../errors.js";
 import type { AuthenticatedIdentity } from "../auth/types.js";
 import { requireProviderPermission } from "./provider-rbac.js";
+import {
+  newWalletLinkChallenge,
+  verifyWalletLinkSignature,
+} from "./wallet-link.js";
 import type {
   CreateProviderInput,
   CurrentUser,
@@ -43,6 +47,7 @@ function toPublicProvider(provider: ProviderRecord): PublicProvider {
     websiteUrl: provider.websiteUrl,
     contact: provider.contact,
     walletAddress: provider.walletAddress,
+    walletVerifiedAt: provider.walletVerifiedAt?.toISOString() ?? null,
     status: provider.status,
     version: provider.version,
     createdAt: provider.createdAt.toISOString(),
@@ -55,6 +60,8 @@ export class ProviderService {
     private readonly store: ProviderStore,
     private readonly options: {
       environment: "local" | "preview" | "production";
+      challengeDomain?: string;
+      now?: () => Date;
     },
   ) {}
 
@@ -66,6 +73,114 @@ export class ProviderService {
         403,
       );
     }
+  }
+
+  private async requireOwner(
+    identity: AuthenticatedIdentity,
+    providerId: string,
+  ) {
+    const actor = await this.store.upsertUser(identity);
+    const provider = await this.store.getProvider(providerId);
+    if (!provider || provider.status !== "active") {
+      throw new AppError("RESOURCE_NOT_FOUND", "Provider not found.", 404);
+    }
+    const role = await this.store.getMembershipRole(providerId, actor.id);
+    if (role !== "owner") {
+      throw new AppError(
+        "AUTHORIZATION_DENIED",
+        "Only a provider owner may link its payout wallet.",
+        403,
+      );
+    }
+    return actor;
+  }
+
+  async createWalletLinkChallenge(
+    identity: AuthenticatedIdentity,
+    providerId: string,
+  ) {
+    const actor = await this.requireOwner(identity, providerId);
+    const domain = this.options.challengeDomain ?? "http://localhost:3000";
+    if (
+      this.options.environment !== "local" &&
+      new URL(domain).protocol !== "https:"
+    ) {
+      throw new Error("Cloud wallet challenge domain must use HTTPS");
+    }
+    const challenge = newWalletLinkChallenge({
+      providerId,
+      userId: actor.id,
+      domain: new URL(domain).origin,
+      now: this.options.now?.() ?? new Date(),
+    });
+    await this.store.createWalletLinkChallenge(challenge);
+    return {
+      challengeId: challenge.id,
+      message: challenge.message,
+      expiresAt: challenge.expiresAt.toISOString(),
+    };
+  }
+
+  async confirmWalletLink(
+    identity: AuthenticatedIdentity,
+    providerId: string,
+    challengeId: string,
+    address: string,
+    signature: `0x${string}`,
+    requestId: string,
+  ) {
+    const actor = await this.requireOwner(identity, providerId);
+    const challenge = await this.store.getWalletLinkChallenge(challengeId);
+    if (
+      !challenge ||
+      challenge.providerId !== providerId ||
+      challenge.userId !== actor.id
+    ) {
+      throw new AppError(
+        "WALLET_CHALLENGE_INVALID",
+        "Invalid wallet challenge.",
+        403,
+      );
+    }
+    if (challenge.consumedAt) {
+      throw new AppError(
+        "WALLET_CHALLENGE_USED",
+        "Wallet challenge already used.",
+        409,
+      );
+    }
+    const now = this.options.now?.() ?? new Date();
+    if (challenge.expiresAt.getTime() <= now.getTime()) {
+      throw new AppError(
+        "WALLET_CHALLENGE_EXPIRED",
+        "Wallet challenge expired.",
+        410,
+      );
+    }
+    const walletAddress = await verifyWalletLinkSignature({
+      message: challenge.message,
+      address,
+      signature,
+    });
+    const provider = await this.store.consumeWalletLinkChallenge({
+      challengeId,
+      providerId,
+      userId: actor.id,
+      walletAddress,
+      now,
+      requestId,
+    });
+    if (!provider) {
+      throw new AppError(
+        "WALLET_CHALLENGE_USED",
+        "Wallet challenge already used.",
+        409,
+      );
+    }
+    return {
+      walletAddress: provider.walletAddress,
+      verifiedAt: provider.walletVerifiedAt?.toISOString(),
+    };
   }
 
   async getCurrentUser(identity: AuthenticatedIdentity): Promise<CurrentUser> {

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { privateKeyToAccount } from "viem/accounts";
 
 import { buildApp } from "../src/app.js";
 import { LocalAuthenticator } from "../src/auth/local-authenticator.js";
@@ -169,7 +170,9 @@ beforeEach(async () => {
     },
     actorAgentRoutes: {
       authenticator,
-      service: new ActorAgentService(providers, store, verifier),
+      service: new ActorAgentService(providers, store, verifier, {
+        environment: "local",
+      }),
     },
   });
 });
@@ -187,6 +190,78 @@ async function createProvider(user = "alice"): Promise<string> {
 }
 
 describe("1-step Hosted Actor and ERC-8004 A2A Agent publishing", () => {
+  it("requires a verified payout and rejects a different payTo in production", async () => {
+    await app.close();
+    const providers = new InMemoryProviderStore();
+    store = new MemoryActorAgentStore();
+    const authenticator = new LocalAuthenticator();
+    app = await buildApp({
+      checkDatabase: async () => undefined,
+      environment: "production",
+      webOrigin: "https://facet.example",
+      providerRoutes: {
+        authenticator,
+        service: new ProviderService(providers, {
+          environment: "production",
+          challengeDomain: "https://facet.example",
+        }),
+      },
+      actorAgentRoutes: {
+        authenticator,
+        service: new ActorAgentService(providers, store, verifier, {
+          environment: "production",
+        }),
+      },
+    });
+    const providerId = await createProvider();
+    const payload = {
+      providerId,
+      name: "Payout test",
+      slug: "payout-test",
+      description: "Checks the creator payout.",
+      category: "test",
+      inputSchema: { type: "object" },
+      code: "export default async function run(input) { return [input]; }",
+    };
+    const invoke = (payTo?: string) =>
+      app.inject({
+        method: "POST",
+        url: "/v1/actors",
+        headers: { "x-facet-dev-user": "alice" },
+        payload: { ...payload, ...(payTo ? { payTo } : {}) },
+      });
+    expect((await invoke()).statusCode).toBe(403);
+
+    const wallet = privateKeyToAccount(
+      "0x1111111111111111111111111111111111111111111111111111111111111111",
+    );
+    const issued = await app.inject({
+      method: "POST",
+      url: `/v1/providers/${providerId}/wallet-link-challenges`,
+      headers: { "x-facet-dev-user": "alice" },
+      payload: {},
+    });
+    const { challengeId, message } = issued.json() as {
+      challengeId: string;
+      message: string;
+    };
+    const linked = await app.inject({
+      method: "POST",
+      url: `/v1/providers/${providerId}/wallet-link`,
+      headers: { "x-facet-dev-user": "alice" },
+      payload: {
+        challengeId,
+        address: wallet.address,
+        signature: await wallet.signMessage({ message }),
+      },
+    });
+    expect(linked.statusCode).toBe(200);
+    expect(
+      (await invoke("0x0000000000000000000000000000000000000001")).statusCode,
+    ).toBe(403);
+    expect(store.actors).toHaveLength(0);
+  });
+
   it("publishes a minimalist HOSTED_ACTOR with deterministic imageDigest", async () => {
     const providerId = await createProvider();
     const code =

@@ -113,11 +113,38 @@ export const providers = pgTable(
     websiteUrl: text("website_url"),
     contact: text("contact"),
     walletAddress: text("wallet_address"),
+    walletVerifiedAt: timestamp("wallet_verified_at", { withTimezone: true }),
     status: providerStatus("status").notNull().default("active"),
     version: integer("version").notNull().default(1),
     ...timestamps,
   },
   (table) => [uniqueIndex("providers_slug_uidx").on(table.slug)],
+);
+
+export const walletLinkChallenges = pgTable(
+  "wallet_link_challenges",
+  {
+    id: uuid("id").primaryKey(),
+    providerId: uuid("provider_id")
+      .notNull()
+      .references(() => providers.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    message: text("message").notNull(),
+    nonceHash: text("nonce_hash").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index("wallet_link_challenges_provider_user_idx").on(
+      table.providerId,
+      table.userId,
+    ),
+  ],
 );
 
 export const providerMemberships = pgTable(

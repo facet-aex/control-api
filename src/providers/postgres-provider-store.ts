@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, sql } from "drizzle-orm";
 
 import type { AuthenticatedIdentity } from "../auth/types.js";
 import type { Database } from "../db/client.js";
@@ -8,6 +8,7 @@ import {
   providerMemberships,
   providers,
   users,
+  walletLinkChallenges,
 } from "../db/schema.js";
 import { AppError } from "../errors.js";
 import type {
@@ -16,6 +17,7 @@ import type {
   ProviderRole,
   ProviderStore,
   UserRecord,
+  WalletLinkChallenge,
 } from "./provider-types.js";
 import { requireProviderPermission } from "./provider-rbac.js";
 
@@ -135,6 +137,101 @@ export class PostgresProviderStore implements ProviderStore {
       .where(eq(providers.id, providerId))
       .limit(1);
     return rows[0];
+  }
+
+  async createWalletLinkChallenge(
+    input: Omit<WalletLinkChallenge, "consumedAt">,
+  ): Promise<void> {
+    await this.database.insert(walletLinkChallenges).values({
+      id: input.id,
+      providerId: input.providerId,
+      userId: input.userId,
+      message: input.message,
+      nonceHash: input.nonceHash,
+      expiresAt: input.expiresAt,
+    });
+  }
+
+  async getWalletLinkChallenge(
+    challengeId: string,
+  ): Promise<WalletLinkChallenge | undefined> {
+    const rows = await this.database
+      .select()
+      .from(walletLinkChallenges)
+      .where(eq(walletLinkChallenges.id, challengeId))
+      .limit(1);
+    return rows[0];
+  }
+
+  async consumeWalletLinkChallenge(
+    input: Parameters<ProviderStore["consumeWalletLinkChallenge"]>[0],
+  ): Promise<ProviderRecord | undefined> {
+    return this.database.transaction(async (transaction) => {
+      const membership = (
+        await transaction
+          .select({ role: providerMemberships.role })
+          .from(providerMemberships)
+          .where(
+            and(
+              eq(providerMemberships.providerId, input.providerId),
+              eq(providerMemberships.userId, input.userId),
+            ),
+          )
+          .for("update")
+      )[0];
+      if (membership?.role !== "owner") {
+        throw new AppError(
+          "AUTHORIZATION_DENIED",
+          "Only a provider owner may link its payout wallet.",
+          403,
+        );
+      }
+      const consumed = await transaction
+        .update(walletLinkChallenges)
+        .set({ consumedAt: input.now })
+        .where(
+          and(
+            eq(walletLinkChallenges.id, input.challengeId),
+            eq(walletLinkChallenges.providerId, input.providerId),
+            eq(walletLinkChallenges.userId, input.userId),
+            isNull(walletLinkChallenges.consumedAt),
+            gt(walletLinkChallenges.expiresAt, input.now),
+          ),
+        )
+        .returning({ id: walletLinkChallenges.id });
+      if (consumed.length !== 1) return undefined;
+
+      const provider = (
+        await transaction
+          .update(providers)
+          .set({
+            walletAddress: input.walletAddress,
+            walletVerifiedAt: input.now,
+            version: sql`${providers.version} + 1`,
+            updatedAt: input.now,
+          })
+          .where(
+            and(
+              eq(providers.id, input.providerId),
+              eq(providers.status, "active"),
+            ),
+          )
+          .returning()
+      )[0];
+      if (!provider) {
+        throw new AppError("RESOURCE_NOT_FOUND", "Provider not found.", 404);
+      }
+      await transaction.insert(auditEvents).values({
+        actorUserId: input.userId,
+        providerId: input.providerId,
+        eventType: "provider.wallet.linked",
+        subjectType: "provider",
+        subjectId: input.providerId,
+        requestId: input.requestId,
+        metadata: { walletAddress: input.walletAddress },
+      });
+      return provider;
+    });
   }
 
   async getMembershipRole(
@@ -440,6 +537,8 @@ export class PostgresProviderStore implements ProviderStore {
       changes.contact = input.patch.contact;
     if (input.patch.walletAddress !== undefined)
       changes.walletAddress = input.patch.walletAddress;
+    if (input.patch.walletAddress !== undefined)
+      changes.walletVerifiedAt = null;
 
     return this.database.transaction(async (transaction) => {
       const updated = (

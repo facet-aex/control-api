@@ -43,6 +43,11 @@ const updateProviderSchema = z
 const updateMembershipSchema = z.object({
   role: z.enum(PROVIDER_ROLES),
 });
+const confirmWalletLinkSchema = z.object({
+  challengeId: z.string().uuid(),
+  address: optionalWallet,
+  signature: z.string().regex(/^0x[a-fA-F0-9]{130}$/u),
+});
 
 function routeIds(params: unknown): { providerId: string; userId: string } {
   const values = params as { providerId?: unknown; userId?: unknown };
@@ -118,6 +123,37 @@ export async function registerProviderRoutes(
   app.get("/v1/me/providers", async (request) => {
     const identity = await authenticate(request, dependencies.authenticator);
     return { memberships: await dependencies.service.listMine(identity) };
+  });
+
+  app.post(
+    "/v1/providers/:providerId/wallet-link-challenges",
+    async (request, reply) => {
+      const identity = await authenticate(request, dependencies.authenticator);
+      const providerId = providerIdSchema.parse(
+        (request.params as { providerId?: unknown }).providerId,
+      );
+      const challenge = await dependencies.service.createWalletLinkChallenge(
+        identity,
+        providerId,
+      );
+      return reply.code(201).send(challenge);
+    },
+  );
+
+  app.post("/v1/providers/:providerId/wallet-link", async (request) => {
+    const identity = await authenticate(request, dependencies.authenticator);
+    const providerId = providerIdSchema.parse(
+      (request.params as { providerId?: unknown }).providerId,
+    );
+    const body = confirmWalletLinkSchema.parse(request.body);
+    return dependencies.service.confirmWalletLink(
+      identity,
+      providerId,
+      body.challengeId,
+      body.address,
+      body.signature as `0x${string}`,
+      request.id,
+    );
   });
 
   app.get("/v1/providers/:providerId/members", async (request) => {

@@ -7,6 +7,7 @@ import type {
   ProviderRole,
   ProviderStore,
   UserRecord,
+  WalletLinkChallenge,
 } from "../src/providers/provider-types.js";
 
 export class InMemoryProviderStore implements ProviderStore {
@@ -17,6 +18,7 @@ export class InMemoryProviderStore implements ProviderStore {
   }> = [];
   private readonly memberships = new Map<string, ProviderRole>();
   private readonly providers = new Map<string, ProviderRecord>();
+  private readonly walletChallenges = new Map<string, WalletLinkChallenge>();
   private readonly users = new Map<string, UserRecord>();
   private readonly usersById = new Map<string, UserRecord>();
 
@@ -60,6 +62,7 @@ export class InMemoryProviderStore implements ProviderStore {
       websiteUrl: input.provider.websiteUrl ?? null,
       contact: input.provider.contact ?? null,
       walletAddress: input.provider.walletAddress ?? null,
+      walletVerifiedAt: null,
       status: "active",
       version: 1,
       createdAt: now,
@@ -77,6 +80,40 @@ export class InMemoryProviderStore implements ProviderStore {
 
   async getProvider(providerId: string): Promise<ProviderRecord | undefined> {
     return this.providers.get(providerId);
+  }
+
+  async createWalletLinkChallenge(
+    input: Omit<WalletLinkChallenge, "consumedAt">,
+  ): Promise<void> {
+    this.walletChallenges.set(input.id, { ...input, consumedAt: null });
+  }
+
+  async getWalletLinkChallenge(
+    challengeId: string,
+  ): Promise<WalletLinkChallenge | undefined> {
+    return this.walletChallenges.get(challengeId);
+  }
+
+  async consumeWalletLinkChallenge(
+    input: Parameters<ProviderStore["consumeWalletLinkChallenge"]>[0],
+  ): Promise<ProviderRecord | undefined> {
+    const challenge = this.walletChallenges.get(input.challengeId);
+    const provider = this.providers.get(input.providerId);
+    if (
+      !challenge ||
+      !provider ||
+      challenge.consumedAt ||
+      challenge.providerId !== input.providerId ||
+      challenge.userId !== input.userId ||
+      challenge.expiresAt.getTime() <= input.now.getTime()
+    )
+      return undefined;
+    challenge.consumedAt = input.now;
+    provider.walletAddress = input.walletAddress;
+    provider.walletVerifiedAt = input.now;
+    provider.version += 1;
+    provider.updatedAt = input.now;
+    return provider;
   }
 
   async getMembershipRole(
@@ -260,6 +297,10 @@ export class InMemoryProviderStore implements ProviderStore {
         input.patch.walletAddress === undefined
           ? provider.walletAddress
           : input.patch.walletAddress,
+      walletVerifiedAt:
+        input.patch.walletAddress === undefined
+          ? provider.walletVerifiedAt
+          : null,
       version: provider.version + 1,
       updatedAt: new Date("2026-11-09T00:01:00.000Z"),
     };

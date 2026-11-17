@@ -37,10 +37,21 @@ export interface ProviderRecord {
   websiteUrl: string | null;
   contact: string | null;
   walletAddress: string | null;
+  walletVerifiedAt: Date | null;
   status: "active" | "disabled";
   version: number;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface WalletLinkChallenge {
+  id: string;
+  providerId: string;
+  userId: string;
+  message: string;
+  nonceHash: string;
+  expiresAt: Date;
+  consumedAt: Date | null;
 }
 
 export interface CreateProviderInput {
@@ -69,6 +80,20 @@ export interface ProviderStore {
     requestId: string;
   }): Promise<ProviderRecord>;
   getProvider(providerId: string): Promise<ProviderRecord | undefined>;
+  createWalletLinkChallenge(
+    input: Omit<WalletLinkChallenge, "consumedAt">,
+  ): Promise<void>;
+  getWalletLinkChallenge(
+    challengeId: string,
+  ): Promise<WalletLinkChallenge | undefined>;
+  consumeWalletLinkChallenge(input: {
+    challengeId: string;
+    providerId: string;
+    userId: string;
+    walletAddress: string;
+    now: Date;
+    requestId: string;
+  }): Promise<ProviderRecord | undefined>;
   getMembershipRole(
     providerId: string,
     userId: string,
@@ -107,6 +132,7 @@ export interface PublicProvider {
   websiteUrl: string | null;
   contact: string | null;
   walletAddress: string | null;
+  walletVerifiedAt: string | null;
   status: "active" | "disabled";
   version: number;
   createdAt: string;

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { loadEnvFile } from "node:process";
 
 import { eq, inArray } from "drizzle-orm";
+import { privateKeyToAccount } from "viem/accounts";
 
 import { buildApp } from "../src/app.js";
 import { LocalAuthenticator } from "../src/auth/local-authenticator.js";
@@ -154,6 +155,56 @@ try {
   });
   requireStatus(created.statusCode, 201, "create provider");
   providerId = (created.json().provider as { id: string }).id;
+
+  const payoutAccount = privateKeyToAccount(
+    "0x1111111111111111111111111111111111111111111111111111111111111111",
+  );
+  const challengeResponse = await app.inject({
+    method: "POST",
+    url: `/v1/providers/${providerId}/wallet-link-challenges`,
+    headers: { "x-facet-dev-user": alice },
+    payload: {},
+  });
+  requireStatus(challengeResponse.statusCode, 201, "create wallet challenge");
+  const { challengeId, message } = challengeResponse.json() as {
+    challengeId: string;
+    message: string;
+  };
+  const walletPayload = {
+    challengeId,
+    address: payoutAccount.address,
+    signature: await payoutAccount.signMessage({ message }),
+  };
+  const [walletLinked, walletReplayed] = await Promise.all([
+    app.inject({
+      method: "POST",
+      url: `/v1/providers/${providerId}/wallet-link`,
+      headers: { "x-facet-dev-user": alice },
+      payload: walletPayload,
+    }),
+    app.inject({
+      method: "POST",
+      url: `/v1/providers/${providerId}/wallet-link`,
+      headers: { "x-facet-dev-user": alice },
+      payload: walletPayload,
+    }),
+  ]);
+  const walletStatuses = [
+    walletLinked.statusCode,
+    walletReplayed.statusCode,
+  ].sort();
+  if (walletStatuses[0] !== 200 || walletStatuses[1] !== 409) {
+    throw new Error(
+      `concurrent wallet challenge consumption: ${walletStatuses.join(",")}`,
+    );
+  }
+  const verifiedProvider = await providerStore.getProvider(providerId);
+  if (
+    verifiedProvider?.walletAddress !== payoutAccount.address ||
+    !verifiedProvider.walletVerifiedAt
+  ) {
+    throw new Error("wallet proof was not persisted");
+  }
 
   const aliceProfile = await app.inject({
     method: "GET",
