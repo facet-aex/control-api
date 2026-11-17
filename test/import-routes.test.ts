@@ -112,7 +112,7 @@ beforeEach(async () => {
     webOrigin: "http://localhost:3000",
     providerRoutes: {
       authenticator,
-      service: new ProviderService(providers),
+      service: new ProviderService(providers, { environment: "local" }),
     },
     importRoutes: {
       authenticator,
@@ -236,7 +236,7 @@ describe("OpenAPI import commands", () => {
       webOrigin: "http://localhost:3000",
       providerRoutes: {
         authenticator,
-        service: new ProviderService(providers),
+        service: new ProviderService(providers, { environment: "local" }),
       },
       importRoutes: {
         authenticator,

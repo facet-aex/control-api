@@ -64,7 +64,7 @@ const app = await buildApp({
   webOrigin: config.WEB_ORIGIN,
   providerRoutes: {
     authenticator: new LocalAuthenticator(),
-    service: new ProviderService(providerStore),
+    service: new ProviderService(providerStore, { environment: "local" }),
   },
   importRoutes: {
     authenticator: new LocalAuthenticator(),

@@ -17,7 +17,7 @@ beforeEach(async () => {
     webOrigin: "http://localhost:3000",
     providerRoutes: {
       authenticator: new LocalAuthenticator(),
-      service: new ProviderService(store),
+      service: new ProviderService(store, { environment: "local" }),
     },
   });
 });

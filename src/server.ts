@@ -35,6 +35,7 @@ const config = readConfig();
 const database = createDatabase(config.DATABASE_URL);
 const providerService = new ProviderService(
   new PostgresProviderStore(database.db),
+  { environment: config.FACET_ENV },
 );
 const authenticator = createAuthenticator(config);
 const importService = new ImportService(

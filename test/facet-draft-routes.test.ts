@@ -129,7 +129,7 @@ beforeEach(async () => {
     webOrigin: "http://localhost:3000",
     providerRoutes: {
       authenticator,
-      service: new ProviderService(providers),
+      service: new ProviderService(providers, { environment: "local" }),
     },
     facetDraftRoutes: {
       authenticator,

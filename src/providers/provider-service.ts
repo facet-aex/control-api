@@ -51,7 +51,22 @@ function toPublicProvider(provider: ProviderRecord): PublicProvider {
 }
 
 export class ProviderService {
-  constructor(private readonly store: ProviderStore) {}
+  constructor(
+    private readonly store: ProviderStore,
+    private readonly options: {
+      environment: "local" | "preview" | "production";
+    },
+  ) {}
+
+  private requireWalletProofForCloud(walletAddress: unknown): void {
+    if (this.options.environment !== "local" && walletAddress !== undefined) {
+      throw new AppError(
+        "WALLET_PROOF_REQUIRED",
+        "Link a payout wallet with a signed challenge.",
+        403,
+      );
+    }
+  }
 
   async getCurrentUser(identity: AuthenticatedIdentity): Promise<CurrentUser> {
     return toCurrentUser(await this.store.upsertUser(identity));
@@ -62,6 +77,7 @@ export class ProviderService {
     input: CreateProviderInput,
     requestId: string,
   ): Promise<PublicProvider> {
+    this.requireWalletProofForCloud(input.walletAddress);
     const actor = await this.store.upsertUser(identity);
     const provider = await this.store.createProvider({
       actorUserId: actor.id,
@@ -140,6 +156,7 @@ export class ProviderService {
     input: UpdateProviderInput,
     requestId: string,
   ): Promise<PublicProvider> {
+    this.requireWalletProofForCloud(input.walletAddress);
     const actor = await this.store.upsertUser(identity);
     const role = await this.store.getMembershipRole(providerId, actor.id);
     requireProviderPermission(role, "provider:update");
