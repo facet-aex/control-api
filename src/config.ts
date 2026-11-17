@@ -58,6 +58,7 @@ const environmentSchema = z.object({
     .max(60_000)
     .default(10_000),
   FACET_IMPORTER_URL: z.string().url().default("http://127.0.0.1:4010"),
+  FACET_IMPORTER_ALLOW_PRIVATE_HTTP: z.enum(["0", "1"]).default("0"),
   FACET_IMPORT_WORKER_POLL_MS: z.coerce
     .number()
     .int()
@@ -125,7 +126,15 @@ export function readConfig(
     config.FACET_ENV === "local" &&
     importerUrl.protocol === "http:" &&
     ["127.0.0.1", "localhost", "[::1]"].includes(importerUrl.hostname);
-  if (importerUrl.protocol !== "https:" && !isLocalLoopback) {
+  const isPrivateDockerImporter =
+    config.FACET_ENV === "production" &&
+    config.FACET_IMPORTER_ALLOW_PRIVATE_HTTP === "1" &&
+    importerUrl.href === "http://openapi-importer:4010/";
+  if (
+    importerUrl.protocol !== "https:" &&
+    !isLocalLoopback &&
+    !isPrivateDockerImporter
+  ) {
     throw new Error(
       "FACET_IMPORTER_URL must use HTTPS outside the local loopback environment",
     );

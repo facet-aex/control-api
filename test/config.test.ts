@@ -56,4 +56,43 @@ describe("authentication configuration", () => {
       }),
     ).toThrow("FACET_IMPORTER_URL must use HTTPS");
   });
+
+  it("allows the exact Docker importer URL only with a production opt-in", () => {
+    const environment = {
+      FACET_ENV: "production",
+      FACET_AUTH_MODE: "clerk",
+      CLERK_SECRET_KEY: "test-key",
+      DATABASE_URL: "postgresql://user:password@localhost:5432/facet",
+      FACET_IMPORTER_URL: "http://openapi-importer:4010",
+    };
+
+    expect(() => readConfig(environment)).toThrow(
+      "FACET_IMPORTER_URL must use HTTPS",
+    );
+    expect(
+      readConfig({
+        ...environment,
+        FACET_IMPORTER_ALLOW_PRIVATE_HTTP: "1",
+      }).FACET_IMPORTER_URL,
+    ).toBe("http://openapi-importer:4010");
+  });
+
+  it.each([
+    "http://importer.internal:4010",
+    "http://openapi-importer.evil:4010",
+    "http://openapi-importer:4011",
+    "http://openapi-importer:4010/other",
+    "http://user:pass@openapi-importer:4010",
+  ])("rejects other plaintext importer URLs even with opt-in: %s", (url) => {
+    expect(() =>
+      readConfig({
+        FACET_ENV: "production",
+        FACET_AUTH_MODE: "clerk",
+        CLERK_SECRET_KEY: "test-key",
+        DATABASE_URL: "postgresql://user:password@localhost:5432/facet",
+        FACET_IMPORTER_URL: url,
+        FACET_IMPORTER_ALLOW_PRIVATE_HTTP: "1",
+      }),
+    ).toThrow("FACET_IMPORTER_URL must use HTTPS");
+  });
 });
