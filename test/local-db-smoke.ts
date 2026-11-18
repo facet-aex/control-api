@@ -29,6 +29,7 @@ import { EndpointConfigService } from "../src/facets/endpoint-config-service.js"
 import { FacetDraftService } from "../src/facets/facet-draft-service.js";
 import { FacetPublicationService } from "../src/facets/facet-publication-service.js";
 import { FacetValidationService } from "../src/facets/facet-validation-service.js";
+import { PostgresActorPreviewQuota } from "../src/facets/postgres-actor-preview-quota.js";
 import { PostgresEndpointConfigStore } from "../src/facets/postgres-endpoint-config-store.js";
 import { PostgresFacetDraftStore } from "../src/facets/postgres-facet-draft-store.js";
 import { PostgresFacetPublicationStore } from "../src/facets/postgres-facet-publication-store.js";
@@ -212,6 +213,20 @@ try {
     headers: { "x-facet-dev-user": alice },
   });
   const aliceId = (aliceProfile.json().user as { id: string }).id;
+  const previewQuota = new PostgresActorPreviewQuota(database.db);
+  const quotaResults = await Promise.all(
+    Array.from({ length: 12 }, () =>
+      previewQuota.consume(aliceId, new Date("2026-11-17T12:00:00.000Z")),
+    ),
+  );
+  if (quotaResults.filter(Boolean).length !== 10) {
+    throw new Error("concurrent Actor preview quota exceeded its daily cap");
+  }
+  if (
+    !(await previewQuota.consume(aliceId, new Date("2026-11-18T00:00:00.000Z")))
+  ) {
+    throw new Error("Actor preview quota did not reset on the next UTC day");
+  }
   const finalOwnerRemoval = await app.inject({
     method: "DELETE",
     url: `/v1/providers/${providerId}/members/${aliceId}`,

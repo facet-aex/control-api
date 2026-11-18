@@ -3,6 +3,31 @@ import { describe, expect, it } from "vitest";
 import { readConfig } from "../src/config.js";
 
 describe("authentication configuration", () => {
+  it("requires an internal executor token and fixed Docker service URL in production", () => {
+    const base = {
+      FACET_ENV: "production",
+      FACET_AUTH_MODE: "clerk",
+      CLERK_SECRET_KEY: "test-key",
+      DATABASE_URL: "postgresql://user:password@localhost:5432/facet",
+      FACET_IMPORTER_URL: "http://openapi-importer:4010",
+      FACET_IMPORTER_ALLOW_PRIVATE_HTTP: "1",
+    };
+    expect(() => readConfig(base)).toThrow("FACET_EXECUTOR_TOKEN");
+    expect(() =>
+      readConfig({
+        ...base,
+        FACET_EXECUTOR_TOKEN: "a".repeat(32),
+        FACET_EXECUTOR_URL: "http://evil.example:4030",
+      }),
+    ).toThrow("FACET_EXECUTOR_URL");
+    expect(
+      readConfig({
+        ...base,
+        FACET_EXECUTOR_TOKEN: "a".repeat(32),
+        FACET_EXECUTOR_URL: "http://executor:4030",
+      }).FACET_EXECUTOR_URL,
+    ).toBe("http://executor:4030");
+  });
   it("rejects local header auth outside the local environment", () => {
     expect(() =>
       readConfig({
@@ -64,6 +89,8 @@ describe("authentication configuration", () => {
       CLERK_SECRET_KEY: "test-key",
       DATABASE_URL: "postgresql://user:password@localhost:5432/facet",
       FACET_IMPORTER_URL: "http://openapi-importer:4010",
+      FACET_EXECUTOR_URL: "http://executor:4030",
+      FACET_EXECUTOR_TOKEN: "a".repeat(32),
     };
 
     expect(() => readConfig(environment)).toThrow(

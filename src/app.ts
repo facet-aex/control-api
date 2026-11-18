@@ -34,6 +34,10 @@ import {
   type ProviderRouteDependencies,
 } from "./providers/provider-routes.js";
 import {
+  registerActorPreviewRoutes,
+  type ActorPreviewRouteDependencies,
+} from "./facets/actor-preview.js";
+import {
   registerSecretRoutes,
   type SecretRouteDependencies,
 } from "./secrets/secret-routes.js";
@@ -43,6 +47,7 @@ export interface AppDependencies {
   environment: "local" | "preview" | "production";
   webOrigin: string;
   providerRoutes?: ProviderRouteDependencies;
+  actorPreviewRoutes?: ActorPreviewRouteDependencies;
   importRoutes?: ImportRouteDependencies;
   facetDraftRoutes?: FacetDraftRouteDependencies;
   actorAgentRoutes?: ActorAgentRouteDependencies;
@@ -104,6 +109,9 @@ export async function buildApp(
 
   if (dependencies.providerRoutes) {
     await registerProviderRoutes(app, dependencies.providerRoutes);
+  }
+  if (dependencies.actorPreviewRoutes) {
+    await registerActorPreviewRoutes(app, dependencies.actorPreviewRoutes);
   }
   if (dependencies.importRoutes) {
     await registerImportRoutes(app, dependencies.importRoutes);

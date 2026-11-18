@@ -147,6 +147,18 @@ export const walletLinkChallenges = pgTable(
   ],
 );
 
+export const actorPreviewUsage = pgTable(
+  "actor_preview_usage",
+  {
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    dayUtc: text("day_utc").notNull(),
+    count: integer("count").notNull().default(0),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.dayUtc] })],
+);
+
 export const providerMemberships = pgTable(
   "provider_memberships",
   {

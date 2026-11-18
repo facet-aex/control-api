@@ -5,12 +5,14 @@ import { createAuthenticator } from "./auth/create-authenticator.js";
 import { readConfig } from "./config.js";
 import { createDatabase } from "./db/client.js";
 import { ActorAgentService } from "./facets/actor-agent-service.js";
+import { createActorPreviewExecutor } from "./facets/actor-preview-client.js";
 import { FacetDraftService } from "./facets/facet-draft-service.js";
 import { FacetPublicationService } from "./facets/facet-publication-service.js";
 import { FacetValidationService } from "./facets/facet-validation-service.js";
 import { FujiRegistryVerifier } from "./facets/fuji-registry-verifier.js";
 import { EndpointConfigService } from "./facets/endpoint-config-service.js";
 import { PostgresActorAgentStore } from "./facets/postgres-actor-agent-store.js";
+import { PostgresActorPreviewQuota } from "./facets/postgres-actor-preview-quota.js";
 import { PostgresEndpointConfigStore } from "./facets/postgres-endpoint-config-store.js";
 import { PostgresFacetValidationStore } from "./facets/postgres-facet-validation-store.js";
 import { PostgresFacetDraftStore } from "./facets/postgres-facet-draft-store.js";
@@ -93,6 +95,20 @@ const app = await buildApp({
     authenticator,
     service: providerService,
   },
+  ...(config.FACET_EXECUTOR_TOKEN
+    ? {
+        actorPreviewRoutes: {
+          authenticator,
+          providers: new PostgresProviderStore(database.db),
+          consumeQuota: (userId: string, now: Date) =>
+            new PostgresActorPreviewQuota(database.db).consume(userId, now),
+          execute: createActorPreviewExecutor(
+            config.FACET_EXECUTOR_URL,
+            config.FACET_EXECUTOR_TOKEN,
+          ),
+        },
+      }
+    : {}),
   importRoutes: {
     authenticator,
     service: importService,

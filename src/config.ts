@@ -58,6 +58,8 @@ const environmentSchema = z.object({
     .max(60_000)
     .default(10_000),
   FACET_IMPORTER_URL: z.string().url().default("http://127.0.0.1:4010"),
+  FACET_EXECUTOR_URL: z.string().url().default("http://127.0.0.1:4030"),
+  FACET_EXECUTOR_TOKEN: optionalNonEmptyString,
   FACET_IMPORTER_ALLOW_PRIVATE_HTTP: z.enum(["0", "1"]).default("0"),
   FACET_IMPORT_WORKER_POLL_MS: z.coerce
     .number()
@@ -138,6 +140,22 @@ export function readConfig(
     throw new Error(
       "FACET_IMPORTER_URL must use HTTPS outside the local loopback environment",
     );
+  }
+
+  if (config.FACET_ENV === "production") {
+    if (
+      !config.FACET_EXECUTOR_TOKEN ||
+      config.FACET_EXECUTOR_TOKEN.length < 32
+    ) {
+      throw new Error(
+        "FACET_EXECUTOR_TOKEN must have at least 32 characters in production",
+      );
+    }
+    if (new URL(config.FACET_EXECUTOR_URL).href !== "http://executor:4030/") {
+      throw new Error(
+        "FACET_EXECUTOR_URL must be the internal Docker executor in production",
+      );
+    }
   }
 
   return config;
