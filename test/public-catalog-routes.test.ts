@@ -10,6 +10,7 @@ const facet: PublicFacet = {
   id: randomUUID(),
   versionId: randomUUID(),
   slug: "weather",
+  fullName: "example/weather",
   name: "Weather",
   description: "Current weather",
   category: "Data",
@@ -29,6 +30,9 @@ const catalog: PublicCatalog = {
   },
   async get(id) {
     return id === facet.id ? facet : undefined;
+  },
+  async getByName(username, facetName) {
+    return `${username}/${facetName}` === facet.fullName ? facet : undefined;
   },
 };
 
@@ -51,6 +55,11 @@ describe("public catalog routes", () => {
       url: `/v1/catalog/facets/${facet.id}`,
     });
     expect(detail.json()).toEqual({ facet });
+    const namedDetail = await app.inject({
+      method: "GET",
+      url: "/v1/catalog/facets/example/weather",
+    });
+    expect(namedDetail.json()).toEqual({ facet });
     expect(JSON.stringify(detail.json())).not.toMatch(
       /protectedBaseUrl|secretRefId|vaultReference/iu,
     );

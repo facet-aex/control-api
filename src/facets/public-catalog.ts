@@ -15,6 +15,7 @@ export type FacetType =
 
 export interface PublicFacet {
   id: string;
+  fullName?: string;
   versionId: string;
   slug: string;
   name: string;
@@ -63,6 +64,10 @@ export interface PublicCatalog {
     filters?: CatalogListFilters,
   ): Promise<PublicFacet[]>;
   get(id: string): Promise<PublicFacet | undefined>;
+  getByName(
+    username: string,
+    facetName: string,
+  ): Promise<PublicFacet | undefined>;
 }
 
 const ignoredWords = new Set([
@@ -193,6 +198,7 @@ export class PostgresPublicCatalog implements PublicCatalog {
 
     return {
       id: row.facet.id,
+      fullName: `${row.provider.slug}/${row.facet.slug}`,
       versionId: row.version.id,
       slug: row.facet.slug,
       name: row.facet.name,
@@ -272,6 +278,22 @@ export class PostgresPublicCatalog implements PublicCatalog {
   async get(id: string): Promise<PublicFacet | undefined> {
     const rows = await this.base()
       .where(and(this.visible(), eq(facets.id, id)))
+      .limit(1);
+    return rows[0] ? this.map(rows[0]) : undefined;
+  }
+
+  async getByName(
+    username: string,
+    facetName: string,
+  ): Promise<PublicFacet | undefined> {
+    const rows = await this.base()
+      .where(
+        and(
+          this.visible(),
+          eq(providers.slug, username),
+          eq(facets.slug, facetName),
+        ),
+      )
       .limit(1);
     return rows[0] ? this.map(rows[0]) : undefined;
   }
