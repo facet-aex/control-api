@@ -16,6 +16,7 @@ import {
   type CreateAgentFacetCommand,
 } from "./actor-agent-types.js";
 import type { RegistryVerifier } from "./fuji-registry-verifier.js";
+import { hashFacetManifest } from "./facet-manifest.js";
 
 const schemaAjv = new Ajv2020({
   allErrors: true,
@@ -68,19 +69,67 @@ export class ActorAgentService {
     private readonly registryVerifier: RegistryVerifier | undefined,
     private readonly options: {
       environment: "local" | "preview" | "production";
+      publicBaseUrl?: string;
     },
   ) {}
+
+  async getActorPublishStatus(
+    identity: AuthenticatedIdentity,
+    facetId: string,
+  ) {
+    const actor = await this.providers.upsertUser(identity);
+    const status = await this.store.getActorPublishStatus(facetId);
+    if (!status)
+      throw new AppError("RESOURCE_NOT_FOUND", "Actor not found.", 404);
+    const role = await this.providers.getMembershipRole(
+      status.providerId,
+      actor.id,
+    );
+    requireProviderPermission(role, "provider:read-private");
+    return {
+      facetId: status.facetId,
+      versionId: status.versionId,
+      status: status.status,
+      ...(status.registryTxHash
+        ? { registryTxHash: status.registryTxHash }
+        : {}),
+      ...(status.errorCode ? { errorCode: status.errorCode } : {}),
+    };
+  }
 
   async publishActor(
     identity: AuthenticatedIdentity,
     command: CreateActorCommand,
     requestId: string,
+    idempotencyKey?: string,
   ) {
     assertValidJsonSchema(command.inputSchema, "inputSchema");
     if (command.outputSchema) {
       assertValidJsonSchema(command.outputSchema, "outputSchema");
     }
     assertValidActorCode(command.code);
+
+    const pending = this.options.environment !== "local";
+    if (pending) {
+      if (!idempotencyKey || idempotencyKey.length > 128) {
+        throw new AppError(
+          "IDEMPOTENCY_KEY_REQUIRED",
+          "A bounded Idempotency-Key is required.",
+          400,
+        );
+      }
+      if (
+        command.registryTxHash ||
+        (command.pricingModel && command.pricingModel !== "PAY_PER_RUN") ||
+        (command.priceAtomic && command.priceAtomic !== "1000")
+      ) {
+        throw new AppError(
+          "INPUT_INVALID",
+          "New Actor publication uses managed Fuji registration and PAY_PER_RUN at 1000 atomic fUSD.",
+          400,
+        );
+      }
+    }
 
     const actor = await this.providers.upsertUser(identity);
     const role = await this.providers.getMembershipRole(
@@ -162,11 +211,23 @@ export class ActorAgentService {
       payTo,
       registryVerified,
       requestId,
+      pending,
+      ...(pending
+        ? {
+            idempotencyKey: idempotencyKey!,
+            requestFingerprint: hashFacetManifest({ command, payTo }),
+            ...(this.options.publicBaseUrl
+              ? { publicBaseUrl: this.options.publicBaseUrl }
+              : {}),
+          }
+        : {}),
     });
 
     return {
       ...published,
-      publishedAt: published.publishedAt.toISOString(),
+      ...(published.publishedAt
+        ? { publishedAt: published.publishedAt.toISOString() }
+        : {}),
     };
   }
 

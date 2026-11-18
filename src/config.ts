@@ -100,6 +100,7 @@ const environmentSchema = z.object({
       .regex(/^0x[a-fA-F0-9]{40}$/u)
       .optional(),
   ),
+  FACET_REGISTRY_OWNER_PRIVATE_KEY: optionalNonEmptyString,
 });
 
 export type AppConfig = z.infer<typeof environmentSchema>;

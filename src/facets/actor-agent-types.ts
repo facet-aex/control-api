@@ -13,6 +13,7 @@ export interface CreateActorCommand {
   providerId: string;
   name: string;
   slug: string;
+  displayVersion?: string | undefined;
   summary?: string | undefined;
   description: string;
   category: string;
@@ -33,9 +34,9 @@ export interface PublishedActorRecord {
   facetType: "HOSTED_ACTOR";
   imageDigest: string;
   registryVerified: boolean;
-  status: "PUBLISHED";
-  visibility: "PUBLIC";
-  publishedAt: Date;
+  status: "PUBLISHED" | "REGISTRATION_PENDING";
+  visibility: "PUBLIC" | "PRIVATE";
+  publishedAt?: Date | undefined;
 }
 
 export interface CreateAgentFacetCommand {
@@ -85,6 +86,17 @@ export interface PublishedFacetRegistryContext {
 }
 
 export interface ActorAgentStore {
+  getActorPublishStatus(facetId: string): Promise<
+    | {
+        providerId: string;
+        facetId: string;
+        versionId: string;
+        status: "REGISTRATION_PENDING" | "PUBLISHED" | "REGISTRATION_FAILED";
+        registryTxHash: string | null;
+        errorCode: string | null;
+      }
+    | undefined
+  >;
   publishActor(input: {
     actorUserId: string;
     command: CreateActorCommand;
@@ -93,6 +105,10 @@ export interface ActorAgentStore {
     payTo: string;
     registryVerified: boolean;
     requestId: string;
+    pending?: boolean;
+    idempotencyKey?: string;
+    requestFingerprint?: string;
+    publicBaseUrl?: string;
   }): Promise<PublishedActorRecord>;
   publishAgentFacet(input: {
     actorUserId: string;

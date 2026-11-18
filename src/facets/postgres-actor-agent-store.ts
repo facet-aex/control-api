@@ -4,6 +4,7 @@ import type { Database } from "../db/client.js";
 import {
   apiSources,
   apiSourceVersions,
+  actorRegistrationJobs,
   auditEvents,
   facets,
   facetVersions,
@@ -23,12 +24,9 @@ import {
 } from "./actor-agent-types.js";
 
 function isUniqueViolation(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    error.code === "23505"
-  );
+  if (typeof error !== "object" || error === null) return false;
+  if ("code" in error && error.code === "23505") return true;
+  return "cause" in error && isUniqueViolation(error.cause);
 }
 
 function requiredRow<T>(rows: T[], context: string): T {
@@ -40,12 +38,94 @@ function requiredRow<T>(rows: T[], context: string): T {
 export class PostgresActorAgentStore implements ActorAgentStore {
   constructor(private readonly database: Database["db"]) {}
 
+  async getActorPublishStatus(facetId: string) {
+    const row = (
+      await this.database
+        .select({ job: actorRegistrationJobs, version: facetVersions })
+        .from(actorRegistrationJobs)
+        .innerJoin(
+          facetVersions,
+          eq(actorRegistrationJobs.versionId, facetVersions.id),
+        )
+        .where(eq(actorRegistrationJobs.facetId, facetId))
+        .limit(1)
+    )[0];
+    if (!row) return undefined;
+    return {
+      providerId: row.job.providerId,
+      facetId: row.job.facetId,
+      versionId: row.job.versionId,
+      status:
+        row.job.status === "published"
+          ? ("PUBLISHED" as const)
+          : row.job.status === "failed"
+            ? ("REGISTRATION_FAILED" as const)
+            : ("REGISTRATION_PENDING" as const),
+      registryTxHash: row.version.registryTxHash,
+      errorCode: row.job.errorCode,
+    };
+  }
+
   async publishActor(
     input: Parameters<ActorAgentStore["publishActor"]>[0],
   ): Promise<PublishedActorRecord> {
     const { command } = input;
     try {
       return await this.database.transaction(async (transaction) => {
+        if (input.pending) {
+          const previous = (
+            await transaction
+              .select({
+                job: actorRegistrationJobs,
+                version: facetVersions,
+                facet: facets,
+              })
+              .from(actorRegistrationJobs)
+              .innerJoin(
+                facetVersions,
+                eq(actorRegistrationJobs.versionId, facetVersions.id),
+              )
+              .innerJoin(facets, eq(actorRegistrationJobs.facetId, facets.id))
+              .where(
+                and(
+                  eq(actorRegistrationJobs.providerId, command.providerId),
+                  eq(
+                    actorRegistrationJobs.idempotencyKey,
+                    input.idempotencyKey!,
+                  ),
+                ),
+              )
+              .limit(1)
+          )[0];
+          if (previous) {
+            if (previous.job.requestFingerprint !== input.requestFingerprint) {
+              throw new AppError(
+                "IDEMPOTENCY_CONFLICT",
+                "Idempotency key has different Actor content.",
+                409,
+              );
+            }
+            return {
+              id: previous.facet.id,
+              versionId: previous.version.id,
+              slug: previous.facet.slug,
+              facetType: "HOSTED_ACTOR" as const,
+              imageDigest: previous.version.imageDigest!,
+              registryVerified: previous.version.registryVerified,
+              status:
+                previous.job.status === "published"
+                  ? ("PUBLISHED" as const)
+                  : ("REGISTRATION_PENDING" as const),
+              visibility:
+                previous.job.status === "published"
+                  ? ("PUBLIC" as const)
+                  : ("PRIVATE" as const),
+              ...(previous.version.publishedAt
+                ? { publishedAt: previous.version.publishedAt }
+                : {}),
+            };
+          }
+        }
         const existing = await transaction
           .select({ id: facets.id })
           .from(facets)
@@ -115,7 +195,7 @@ export class PostgresActorAgentStore implements ActorAgentStore {
           schemaVersion: "facet.manifest/v1" as const,
           facetId,
           versionId: ids.version_id,
-          displayVersion: "1.0.0",
+          displayVersion: command.displayVersion ?? "1.0.0",
           providerId: command.providerId,
           type: "HOSTED_ACTOR" as const,
           name: command.name,
@@ -165,15 +245,15 @@ export class PostgresActorAgentStore implements ActorAgentStore {
           description: command.description,
           category: command.category,
           tags,
-          status: "published",
-          visibility: "public",
+          status: input.pending ? "draft" : "published",
+          visibility: input.pending ? "private" : "public",
         });
 
         await transaction.insert(facetVersions).values({
           id: ids.version_id,
           facetId,
-          displayVersion: "1.0.0",
-          status: "published",
+          displayVersion: command.displayVersion ?? "1.0.0",
+          status: input.pending ? "valid" : "published",
           sourceVersionId: ids.source_version_id,
           sourceOperationPointer: "#/actor/run",
           manifest,
@@ -191,19 +271,41 @@ export class PostgresActorAgentStore implements ActorAgentStore {
           registryTxHash: command.registryTxHash ?? null,
           registryVerified: input.registryVerified,
           createdBy: input.actorUserId,
-          publishedAt: now,
-          publishedBy: input.actorUserId,
+          publishedAt: input.pending ? null : now,
+          publishedBy: input.pending ? null : input.actorUserId,
         });
 
-        await transaction
-          .update(facets)
-          .set({ currentPublishedVersionId: ids.version_id, updatedAt: now })
-          .where(eq(facets.id, facetId));
+        if (!input.pending) {
+          await transaction
+            .update(facets)
+            .set({ currentPublishedVersionId: ids.version_id, updatedAt: now })
+            .where(eq(facets.id, facetId));
+        } else {
+          if (
+            !input.publicBaseUrl ||
+            !input.idempotencyKey ||
+            !input.requestFingerprint
+          ) {
+            throw new Error(
+              "Pending Actor registration requires public URL and idempotency metadata",
+            );
+          }
+          await transaction.insert(actorRegistrationJobs).values({
+            versionId: ids.version_id,
+            facetId,
+            providerId: command.providerId,
+            idempotencyKey: input.idempotencyKey,
+            requestFingerprint: input.requestFingerprint,
+            schemaUri: `${new URL(input.publicBaseUrl).origin}/v1/catalog/facets/${facetId}`,
+          });
+        }
 
         await transaction.insert(auditEvents).values({
           actorUserId: input.actorUserId,
           providerId: command.providerId,
-          eventType: "actor.published",
+          eventType: input.pending
+            ? "actor.registration_pending"
+            : "actor.published",
           subjectType: "facet",
           subjectId: facetId,
           requestId: input.requestId,
@@ -223,13 +325,62 @@ export class PostgresActorAgentStore implements ActorAgentStore {
           facetType: "HOSTED_ACTOR",
           imageDigest: input.imageDigest,
           registryVerified: input.registryVerified,
-          status: "PUBLISHED",
-          visibility: "PUBLIC",
-          publishedAt: now,
+          status: input.pending ? "REGISTRATION_PENDING" : "PUBLISHED",
+          visibility: input.pending ? "PRIVATE" : "PUBLIC",
+          ...(!input.pending ? { publishedAt: now } : {}),
         };
       });
     } catch (error) {
       if (error instanceof AppError) throw error;
+      if (input.pending && isUniqueViolation(error) && input.idempotencyKey) {
+        const previous = (
+          await this.database
+            .select({
+              job: actorRegistrationJobs,
+              version: facetVersions,
+              facet: facets,
+            })
+            .from(actorRegistrationJobs)
+            .innerJoin(
+              facetVersions,
+              eq(actorRegistrationJobs.versionId, facetVersions.id),
+            )
+            .innerJoin(facets, eq(actorRegistrationJobs.facetId, facets.id))
+            .where(
+              and(
+                eq(actorRegistrationJobs.providerId, command.providerId),
+                eq(actorRegistrationJobs.idempotencyKey, input.idempotencyKey),
+              ),
+            )
+            .limit(1)
+        )[0];
+        if (previous) {
+          if (previous.job.requestFingerprint !== input.requestFingerprint) {
+            throw new AppError(
+              "IDEMPOTENCY_CONFLICT",
+              "Idempotency key has different Actor content.",
+              409,
+            );
+          }
+          return {
+            id: previous.facet.id,
+            versionId: previous.version.id,
+            slug: previous.facet.slug,
+            facetType: "HOSTED_ACTOR",
+            imageDigest: previous.version.imageDigest!,
+            registryVerified: previous.version.registryVerified,
+            status:
+              previous.job.status === "published"
+                ? "PUBLISHED"
+                : "REGISTRATION_PENDING",
+            visibility:
+              previous.job.status === "published" ? "PUBLIC" : "PRIVATE",
+            ...(previous.version.publishedAt
+              ? { publishedAt: previous.version.publishedAt }
+              : {}),
+          };
+        }
+      }
       if (isUniqueViolation(error)) {
         throw new AppError(
           "RESOURCE_CONFLICT",

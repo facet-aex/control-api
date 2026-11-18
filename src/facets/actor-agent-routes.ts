@@ -25,6 +25,10 @@ const createActorSchema = z
     providerId: z.string().uuid(),
     name: z.string().trim().min(1).max(120),
     slug: slugSchema,
+    displayVersion: z
+      .string()
+      .regex(/^v?[0-9]+(?:\.[0-9]+\.[0-9]+)?$/u)
+      .optional(),
     summary: z.string().trim().max(280).optional(),
     description: z.string().trim().min(1).max(10_000),
     category: z.string().trim().min(1).max(80),
@@ -104,6 +108,11 @@ export async function registerActorAgentRoutes(
   app: FastifyInstance,
   dependencies: ActorAgentRouteDependencies,
 ): Promise<void> {
+  app.get("/v1/actors/:facetId/publish-status", async (request) => {
+    const identity = await authenticate(request, dependencies.authenticator);
+    const { facetId } = verifyRegistryParamsSchema.parse(request.params);
+    return dependencies.service.getActorPublishStatus(identity, facetId);
+  });
   app.post("/v1/actors", async (request, reply) => {
     const identity = await authenticate(request, dependencies.authenticator);
     const input = createActorSchema.parse(request.body);
@@ -111,7 +120,23 @@ export async function registerActorAgentRoutes(
       identity,
       input,
       request.id,
+      typeof request.headers["idempotency-key"] === "string"
+        ? request.headers["idempotency-key"]
+        : undefined,
     );
+    if (facet.status === "REGISTRATION_PENDING") {
+      return reply.code(202).send({
+        facet: {
+          id: facet.id,
+          versionId: facet.versionId,
+          slug: facet.slug,
+          facetType: facet.facetType,
+          status: facet.status,
+          visibility: facet.visibility,
+          imageDigest: facet.imageDigest,
+        },
+      });
+    }
     return reply.code(201).send({ facet });
   });
 

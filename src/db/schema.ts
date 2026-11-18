@@ -463,6 +463,42 @@ export const facetVersions = pgTable(
   ],
 );
 
+export const actorRegistrationJobs = pgTable(
+  "actor_registration_jobs",
+  {
+    versionId: uuid("version_id")
+      .primaryKey()
+      .references(() => facetVersions.id, { onDelete: "cascade" }),
+    facetId: uuid("facet_id")
+      .notNull()
+      .references(() => facets.id, { onDelete: "cascade" }),
+    providerId: uuid("provider_id")
+      .notNull()
+      .references(() => providers.id, { onDelete: "cascade" }),
+    idempotencyKey: text("idempotency_key").notNull(),
+    requestFingerprint: text("request_fingerprint").notNull(),
+    schemaUri: text("schema_uri").notNull(),
+    status: text("status").notNull().default("pending"),
+    signedRaw: text("signed_raw"),
+    txHash: text("tx_hash"),
+    errorCode: text("error_code"),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("actor_registration_provider_idempotency_uidx").on(
+      table.providerId,
+      table.idempotencyKey,
+    ),
+    index("actor_registration_pending_idx").on(
+      table.status,
+      table.leaseExpiresAt,
+      table.createdAt,
+    ),
+  ],
+);
+
 export const auditEvents = pgTable(
   "audit_events",
   {

@@ -32,11 +32,46 @@ class MemoryActorAgentStore implements ActorAgentStore {
   readonly contexts = new Map<string, PublishedFacetRegistryContext>();
   readonly verifiedTxs = new Map<string, string>();
   private readonly slugs = new Set<string>();
+  private readonly idempotency = new Map<
+    string,
+    { fingerprint: string; record: PublishedActorRecord }
+  >();
+
+  async getActorPublishStatus(facetId: string) {
+    const record = this.actors.find((actor) => actor.id === facetId);
+    const context = this.contexts.get(facetId);
+    if (!record || !context) return undefined;
+    return {
+      providerId: context.providerId,
+      facetId,
+      versionId: record.versionId,
+      status:
+        record.status === "PUBLISHED"
+          ? ("PUBLISHED" as const)
+          : ("REGISTRATION_PENDING" as const),
+      registryTxHash: this.verifiedTxs.get(facetId) ?? null,
+      errorCode: null,
+    };
+  }
 
   async publishActor(
     input: Parameters<ActorAgentStore["publishActor"]>[0],
   ): Promise<PublishedActorRecord> {
     const key = `${input.command.providerId}:${input.command.slug}`;
+    if (input.pending) {
+      const idemKey = `${input.command.providerId}:${input.idempotencyKey}`;
+      const previous = this.idempotency.get(idemKey);
+      if (previous) {
+        if (previous.fingerprint !== input.requestFingerprint) {
+          throw new AppError(
+            "IDEMPOTENCY_CONFLICT",
+            "Idempotency key has different Actor content.",
+            409,
+          );
+        }
+        return previous.record;
+      }
+    }
     if (this.slugs.has(key)) {
       throw new AppError(
         "RESOURCE_CONFLICT",
@@ -54,11 +89,22 @@ class MemoryActorAgentStore implements ActorAgentStore {
       facetType: "HOSTED_ACTOR",
       imageDigest: input.imageDigest,
       registryVerified: input.registryVerified,
-      status: "PUBLISHED",
-      visibility: "PUBLIC",
-      publishedAt: new Date("2026-11-16T12:00:00.000Z"),
+      status: input.pending ? "REGISTRATION_PENDING" : "PUBLISHED",
+      visibility: input.pending ? "PRIVATE" : "PUBLIC",
+      ...(!input.pending
+        ? { publishedAt: new Date("2026-11-16T12:00:00.000Z") }
+        : {}),
     };
     this.actors.push(record);
+    if (input.pending) {
+      this.idempotency.set(
+        `${input.command.providerId}:${input.idempotencyKey}`,
+        {
+          fingerprint: input.requestFingerprint ?? "",
+          record,
+        },
+      );
+    }
     this.contexts.set(facetId, {
       facetId,
       providerId: input.command.providerId,
@@ -227,7 +273,10 @@ describe("1-step Hosted Actor and ERC-8004 A2A Agent publishing", () => {
       app.inject({
         method: "POST",
         url: "/v1/actors",
-        headers: { "x-facet-dev-user": "alice" },
+        headers: {
+          "x-facet-dev-user": "alice",
+          "idempotency-key": "payout-check",
+        },
         payload: { ...payload, ...(payTo ? { payTo } : {}) },
       });
     expect((await invoke()).statusCode).toBe(403);
@@ -260,6 +309,57 @@ describe("1-step Hosted Actor and ERC-8004 A2A Agent publishing", () => {
       (await invoke("0x0000000000000000000000000000000000000001")).statusCode,
     ).toBe(403);
     expect(store.actors).toHaveLength(0);
+
+    const publish = (code = payload.code) =>
+      app.inject({
+        method: "POST",
+        url: "/v1/actors",
+        headers: {
+          "x-facet-dev-user": "alice",
+          "idempotency-key": "publish-one",
+        },
+        payload: { ...payload, code },
+      });
+    const first = await publish();
+    expect(first.statusCode).toBe(202);
+    expect(first.json()).toMatchObject({
+      facet: { status: "REGISTRATION_PENDING", visibility: "PRIVATE" },
+    });
+    expect(Object.keys(first.json().facet).sort()).toEqual([
+      "facetType",
+      "id",
+      "imageDigest",
+      "slug",
+      "status",
+      "versionId",
+      "visibility",
+    ]);
+    const status = await app.inject({
+      method: "GET",
+      url: `/v1/actors/${first.json().facet.id}/publish-status`,
+      headers: { "x-facet-dev-user": "alice" },
+    });
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toEqual({
+      facetId: first.json().facet.id,
+      versionId: first.json().facet.versionId,
+      status: "REGISTRATION_PENDING",
+    });
+    const forbidden = await app.inject({
+      method: "GET",
+      url: `/v1/actors/${first.json().facet.id}/publish-status`,
+      headers: { "x-facet-dev-user": "bob" },
+    });
+    expect(forbidden.statusCode).toBe(403);
+    const replay = await publish();
+    expect(replay.statusCode).toBe(202);
+    expect(replay.json().facet.versionId).toBe(first.json().facet.versionId);
+    const conflict = await publish(`${payload.code}\n// changed`);
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.json()).toMatchObject({
+      error: { code: "IDEMPOTENCY_CONFLICT" },
+    });
+    expect(store.actors).toHaveLength(1);
   });
 
   it("publishes a minimalist HOSTED_ACTOR with deterministic imageDigest", async () => {
