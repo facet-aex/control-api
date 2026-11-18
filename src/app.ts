@@ -38,6 +38,12 @@ import {
   type ActorPreviewRouteDependencies,
 } from "./facets/actor-preview.js";
 import {
+  registerDemoPayerRoutes,
+  type DemoPayerAllowance,
+} from "./facets/demo-payer-authorization.js";
+import type { IdentityAuthenticator } from "./auth/types.js";
+import type { ProviderStore } from "./providers/provider-types.js";
+import {
   registerSecretRoutes,
   type SecretRouteDependencies,
 } from "./secrets/secret-routes.js";
@@ -48,6 +54,11 @@ export interface AppDependencies {
   webOrigin: string;
   providerRoutes?: ProviderRouteDependencies;
   actorPreviewRoutes?: ActorPreviewRouteDependencies;
+  demoPayerRoutes?: {
+    authenticator: IdentityAuthenticator;
+    providers: ProviderStore;
+    allowance: DemoPayerAllowance;
+  };
   importRoutes?: ImportRouteDependencies;
   facetDraftRoutes?: FacetDraftRouteDependencies;
   actorAgentRoutes?: ActorAgentRouteDependencies;
@@ -112,6 +123,9 @@ export async function buildApp(
   }
   if (dependencies.actorPreviewRoutes) {
     await registerActorPreviewRoutes(app, dependencies.actorPreviewRoutes);
+  }
+  if (dependencies.demoPayerRoutes) {
+    await registerDemoPayerRoutes(app, dependencies.demoPayerRoutes);
   }
   if (dependencies.importRoutes) {
     await registerImportRoutes(app, dependencies.importRoutes);

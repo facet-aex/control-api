@@ -159,6 +159,33 @@ export const actorPreviewUsage = pgTable(
   (table) => [primaryKey({ columns: [table.userId, table.dayUtc] })],
 );
 
+export const demoPayerAuthorizations = pgTable(
+  "demo_payer_authorizations",
+  {
+    id: uuid("id")
+      .default(sql`uuidv7()`)
+      .primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    facetVersionId: uuid("facet_version_id")
+      .notNull()
+      .references(() => facetVersions.id, { onDelete: "restrict" }),
+    idempotencyKey: text("idempotency_key").notNull(),
+    dayUtc: text("day_utc").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex("demo_payer_user_key_uidx").on(
+      table.userId,
+      table.idempotencyKey,
+    ),
+    index("demo_payer_user_day_idx").on(table.userId, table.dayUtc),
+  ],
+);
+
 export const providerMemberships = pgTable(
   "provider_memberships",
   {

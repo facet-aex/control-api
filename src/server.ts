@@ -13,6 +13,7 @@ import { FujiRegistryVerifier } from "./facets/fuji-registry-verifier.js";
 import { EndpointConfigService } from "./facets/endpoint-config-service.js";
 import { PostgresActorAgentStore } from "./facets/postgres-actor-agent-store.js";
 import { PostgresActorPreviewQuota } from "./facets/postgres-actor-preview-quota.js";
+import { PostgresDemoPayerAllowance } from "./facets/demo-payer-authorization.js";
 import { PostgresEndpointConfigStore } from "./facets/postgres-endpoint-config-store.js";
 import { PostgresFacetValidationStore } from "./facets/postgres-facet-validation-store.js";
 import { PostgresFacetDraftStore } from "./facets/postgres-facet-draft-store.js";
@@ -121,6 +122,11 @@ const app = await buildApp({
   actorAgentRoutes: {
     authenticator,
     service: actorAgentService,
+  },
+  demoPayerRoutes: {
+    authenticator,
+    providers: new PostgresProviderStore(database.db),
+    allowance: new PostgresDemoPayerAllowance(database.pool),
   },
   secretRoutes: {
     authenticator,

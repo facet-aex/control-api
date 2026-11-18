@@ -5,6 +5,7 @@ import { createDatabase } from "../src/db/client.js";
 import { providers, users } from "../src/db/schema.js";
 import { PostgresActorAgentStore } from "../src/facets/postgres-actor-agent-store.js";
 import { PostgresActorRegistrationStore } from "../src/facets/postgres-actor-registration-store.js";
+import { PostgresDemoPayerAllowance } from "../src/facets/demo-payer-authorization.js";
 import { PostgresPublicCatalog } from "../src/facets/public-catalog.js";
 
 if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is required");
@@ -74,8 +75,31 @@ try {
     ),
     true,
   );
+  const allowance = new PostgresDemoPayerAllowance(database.pool);
+  const now = new Date("2026-11-18T00:00:00.000Z");
+  const attempts = await Promise.allSettled(
+    Array.from({ length: 5 }, (_, index) =>
+      allowance.authorize(user.id, first.versionId, `buy-${index}`, now),
+    ),
+  );
+  assert.equal(
+    attempts.filter((result) => result.status === "fulfilled").length,
+    3,
+  );
+  assert.equal(
+    attempts.filter((result) => result.status === "rejected").length,
+    2,
+  );
+  const paidReplay = await allowance.authorize(
+    user.id,
+    first.versionId,
+    "buy-0",
+    now,
+  );
+  assert.equal(paidReplay.amountAtomic, "1000");
+  assert.equal(paidReplay.remainingToday, 0);
   process.stdout.write(
-    "Actor registration outbox, idempotency and catalog smoke passed.\n",
+    "Actor registration, catalog and bounded demo payer smoke passed.\n",
   );
 } finally {
   await database.close();
