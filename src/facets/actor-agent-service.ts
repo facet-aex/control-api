@@ -73,6 +73,11 @@ export class ActorAgentService {
     },
   ) {}
 
+  async listMyActors(identity: AuthenticatedIdentity) {
+    const actor = await this.providers.upsertUser(identity);
+    return { actors: await this.store.listMyActors(actor.id) };
+  }
+
   async getActorPublishStatus(
     identity: AuthenticatedIdentity,
     facetId: string,
@@ -89,6 +94,10 @@ export class ActorAgentService {
     return {
       facetId: status.facetId,
       versionId: status.versionId,
+      ...(status.fullName ? { fullName: status.fullName } : {}),
+      ...(status.displayVersion
+        ? { displayVersion: status.displayVersion }
+        : {}),
       status: status.status,
       ...(status.registryTxHash
         ? { registryTxHash: status.registryTxHash }
@@ -225,6 +234,8 @@ export class ActorAgentService {
 
     return {
       ...published,
+      fullName: `${provider.slug}/${published.slug}`,
+      displayVersion: command.displayVersion ?? "1.0.0",
       ...(published.publishedAt
         ? { publishedAt: published.publishedAt.toISOString() }
         : {}),

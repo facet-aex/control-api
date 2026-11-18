@@ -44,6 +44,7 @@ export class PostgresProviderStore implements ProviderStore {
       .insert(users)
       .values({
         externalSubject: identity.subject,
+        username: identity.username ?? null,
         email: identity.email ?? null,
         displayName: identity.displayName ?? null,
       })
@@ -51,6 +52,7 @@ export class PostgresProviderStore implements ProviderStore {
         target: users.externalSubject,
         set: {
           email: identity.email ?? sql`${users.email}`,
+          username: identity.username ?? sql`${users.username}`,
           displayName: identity.displayName ?? sql`${users.displayName}`,
           updatedAt: new Date(),
         },
@@ -58,6 +60,7 @@ export class PostgresProviderStore implements ProviderStore {
       .returning({
         id: users.id,
         externalSubject: users.externalSubject,
+        username: users.username,
         email: users.email,
         displayName: users.displayName,
         status: users.status,

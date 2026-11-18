@@ -29,6 +29,9 @@ export class LocalAuthenticator implements IdentityAuthenticator {
 
     return {
       subject: `local:${subject}`,
+      ...(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(subject)
+        ? { username: subject }
+        : {}),
       ...(input.devEmail ? { email: input.devEmail.trim().toLowerCase() } : {}),
       ...(input.devDisplayName
         ? { displayName: input.devDisplayName.trim() }

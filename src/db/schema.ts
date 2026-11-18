@@ -91,6 +91,7 @@ export const users = pgTable(
       .default(sql`uuidv7()`)
       .primaryKey(),
     externalSubject: text("external_subject").notNull(),
+    username: text("username"),
     email: text("email"),
     displayName: text("display_name"),
     status: userStatus("status").notNull().default("active"),
@@ -98,6 +99,7 @@ export const users = pgTable(
   },
   (table) => [
     uniqueIndex("users_external_subject_uidx").on(table.externalSubject),
+    uniqueIndex("users_username_uidx").on(table.username),
   ],
 );
 

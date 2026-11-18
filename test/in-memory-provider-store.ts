@@ -30,6 +30,7 @@ export class InMemoryProviderStore implements ProviderStore {
     const user: UserRecord = {
       id: randomUUID(),
       externalSubject: identity.subject,
+      username: identity.username ?? null,
       email: identity.email ?? null,
       displayName: identity.displayName ?? null,
       status: "active",

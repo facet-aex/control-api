@@ -8,6 +8,7 @@ import {
   auditEvents,
   facets,
   facetVersions,
+  providerMemberships,
   providers,
 } from "../db/schema.js";
 import { AppError } from "../errors.js";
@@ -38,15 +39,61 @@ function requiredRow<T>(rows: T[], context: string): T {
 export class PostgresActorAgentStore implements ActorAgentStore {
   constructor(private readonly database: Database["db"]) {}
 
+  async listMyActors(userId: string) {
+    const rows = await this.database
+      .select({
+        job: actorRegistrationJobs,
+        version: facetVersions,
+        facet: facets,
+        provider: providers,
+      })
+      .from(actorRegistrationJobs)
+      .innerJoin(
+        facetVersions,
+        eq(actorRegistrationJobs.versionId, facetVersions.id),
+      )
+      .innerJoin(facets, eq(actorRegistrationJobs.facetId, facets.id))
+      .innerJoin(providers, eq(facets.providerId, providers.id))
+      .innerJoin(
+        providerMemberships,
+        and(
+          eq(providerMemberships.providerId, providers.id),
+          eq(providerMemberships.userId, userId),
+        ),
+      )
+      .orderBy(sql`${actorRegistrationJobs.createdAt} desc`)
+      .limit(50);
+    return rows.map(({ job, version, facet, provider }) => ({
+      id: facet.id,
+      versionId: version.id,
+      fullName: `${provider.slug}/${facet.slug}`,
+      displayVersion: version.displayVersion,
+      status:
+        job.status === "published"
+          ? ("PUBLISHED" as const)
+          : job.status === "failed"
+            ? ("REGISTRATION_FAILED" as const)
+            : ("REGISTRATION_PENDING" as const),
+      registryTxHash: version.registryTxHash,
+    }));
+  }
+
   async getActorPublishStatus(facetId: string) {
     const row = (
       await this.database
-        .select({ job: actorRegistrationJobs, version: facetVersions })
+        .select({
+          job: actorRegistrationJobs,
+          version: facetVersions,
+          facet: facets,
+          provider: providers,
+        })
         .from(actorRegistrationJobs)
         .innerJoin(
           facetVersions,
           eq(actorRegistrationJobs.versionId, facetVersions.id),
         )
+        .innerJoin(facets, eq(actorRegistrationJobs.facetId, facets.id))
+        .innerJoin(providers, eq(facets.providerId, providers.id))
         .where(eq(actorRegistrationJobs.facetId, facetId))
         .limit(1)
     )[0];
@@ -55,6 +102,8 @@ export class PostgresActorAgentStore implements ActorAgentStore {
       providerId: row.job.providerId,
       facetId: row.job.facetId,
       versionId: row.job.versionId,
+      fullName: `${row.provider.slug}/${row.facet.slug}`,
+      displayVersion: row.version.displayVersion,
       status:
         row.job.status === "published"
           ? ("PUBLISHED" as const)

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 
 import { createDatabase } from "../src/db/client.js";
-import { providers, users } from "../src/db/schema.js";
+import { providerMemberships, providers, users } from "../src/db/schema.js";
 import { PostgresActorAgentStore } from "../src/facets/postgres-actor-agent-store.js";
 import { PostgresActorRegistrationStore } from "../src/facets/postgres-actor-registration-store.js";
 import { PostgresDemoPayerAllowance } from "../src/facets/demo-payer-authorization.js";
@@ -21,6 +21,9 @@ try {
     .values({ slug: `smoke-${suffix}`, name: "Smoke" })
     .returning();
   assert(user && provider);
+  await database.db
+    .insert(providerMemberships)
+    .values({ userId: user.id, providerId: provider.id, role: "owner" });
   const store = new PostgresActorAgentStore(database.db);
   const command = {
     providerId: provider.id,
@@ -50,6 +53,10 @@ try {
   ]);
   assert.equal(first.id, replay.id);
   assert.equal(first.status, "REGISTRATION_PENDING");
+  assert.equal(
+    (await store.listMyActors(user.id))[0]?.status,
+    "REGISTRATION_PENDING",
+  );
   const catalog = new PostgresPublicCatalog(database.db);
   assert.equal(
     (await catalog.list(command.name, 20)).some(
@@ -75,6 +82,11 @@ try {
     ),
     true,
   );
+  assert.equal(
+    (await catalog.getByName(provider.slug, command.slug))?.id,
+    first.id,
+  );
+  assert.equal((await store.listMyActors(user.id))[0]?.status, "PUBLISHED");
   const allowance = new PostgresDemoPayerAllowance(database.pool);
   const now = new Date("2026-11-18T00:00:00.000Z");
   const attempts = await Promise.allSettled(

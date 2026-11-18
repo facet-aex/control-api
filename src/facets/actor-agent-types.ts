@@ -86,11 +86,23 @@ export interface PublishedFacetRegistryContext {
 }
 
 export interface ActorAgentStore {
+  listMyActors(userId: string): Promise<
+    Array<{
+      id: string;
+      versionId: string;
+      fullName: string;
+      displayVersion: string;
+      status: "REGISTRATION_PENDING" | "REGISTRATION_FAILED" | "PUBLISHED";
+      registryTxHash: string | null;
+    }>
+  >;
   getActorPublishStatus(facetId: string): Promise<
     | {
         providerId: string;
         facetId: string;
         versionId: string;
+        fullName?: string;
+        displayVersion?: string;
         status: "REGISTRATION_PENDING" | "PUBLISHED" | "REGISTRATION_FAILED";
         registryTxHash: string | null;
         errorCode: string | null;

@@ -1,4 +1,4 @@
-import { verifyToken } from "@clerk/backend";
+import { createClerkClient, verifyToken } from "@clerk/backend";
 
 import { AppError } from "../errors.js";
 import type {
@@ -15,7 +15,13 @@ export interface ClerkAuthenticatorOptions {
 }
 
 export class ClerkAuthenticator implements IdentityAuthenticator {
-  constructor(private readonly options: ClerkAuthenticatorOptions) {}
+  private readonly clerkClient;
+
+  constructor(private readonly options: ClerkAuthenticatorOptions) {
+    this.clerkClient = options.secretKey
+      ? createClerkClient({ secretKey: options.secretKey })
+      : null;
+  }
 
   async authenticate(
     input: AuthenticationInput,
@@ -29,6 +35,7 @@ export class ClerkAuthenticator implements IdentityAuthenticator {
       );
     }
 
+    let subject: string;
     try {
       const payload = await verifyToken(match[1], {
         authorizedParties: this.options.authorizedParties,
@@ -39,10 +46,8 @@ export class ClerkAuthenticator implements IdentityAuthenticator {
           : {}),
       });
 
-      if (!payload.sub) {
-        throw new Error("verified Clerk token has no subject");
-      }
-      return { subject: payload.sub };
+      if (!payload.sub) throw new Error("verified Clerk token has no subject");
+      subject = payload.sub;
     } catch {
       throw new AppError(
         "AUTHENTICATION_REQUIRED",
@@ -50,5 +55,27 @@ export class ClerkAuthenticator implements IdentityAuthenticator {
         401,
       );
     }
+    if (!this.clerkClient) return { subject };
+    let user;
+    try {
+      user = await this.clerkClient.users.getUser(subject);
+    } catch {
+      throw new AppError(
+        "CLERK_PROFILE_UNAVAILABLE",
+        "Clerk user profile could not be loaded.",
+        503,
+      );
+    }
+    if (!user.username || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(user.username)) {
+      throw new AppError(
+        "USERNAME_REQUIRED",
+        "Set a lowercase username using letters, numbers and hyphens in Clerk.",
+        409,
+      );
+    }
+    const displayName =
+      [user.firstName, user.lastName].filter(Boolean).join(" ") ||
+      user.username;
+    return { subject, username: user.username, displayName };
   }
 }

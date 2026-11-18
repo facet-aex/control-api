@@ -18,10 +18,16 @@ import type {
 
 function toCurrentUser(user: {
   id: string;
+  username?: string | null;
   email: string | null;
   displayName: string | null;
 }): CurrentUser {
-  return { id: user.id, email: user.email, displayName: user.displayName };
+  return {
+    id: user.id,
+    username: user.username ?? null,
+    email: user.email,
+    displayName: user.displayName,
+  };
 }
 
 function toProviderMembership(membership: {

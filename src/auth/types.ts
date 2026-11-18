@@ -1,5 +1,6 @@
 export interface AuthenticatedIdentity {
   subject: string;
+  username?: string;
   email?: string;
   displayName?: string;
 }

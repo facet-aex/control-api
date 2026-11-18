@@ -11,6 +11,7 @@ export type ProviderRole = (typeof PROVIDER_ROLES)[number];
 export interface UserRecord {
   id: string;
   externalSubject: string;
+  username?: string | null;
   email: string | null;
   displayName: string | null;
   status: "active" | "disabled";
@@ -18,6 +19,7 @@ export interface UserRecord {
 
 export interface CurrentUser {
   id: string;
+  username?: string | null;
   email: string | null;
   displayName: string | null;
 }

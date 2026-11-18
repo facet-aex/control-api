@@ -108,6 +108,10 @@ export async function registerActorAgentRoutes(
   app: FastifyInstance,
   dependencies: ActorAgentRouteDependencies,
 ): Promise<void> {
+  app.get("/v1/actors/mine", async (request) => {
+    const identity = await authenticate(request, dependencies.authenticator);
+    return dependencies.service.listMyActors(identity);
+  });
   app.get("/v1/actors/:facetId/publish-status", async (request) => {
     const identity = await authenticate(request, dependencies.authenticator);
     const { facetId } = verifyRegistryParamsSchema.parse(request.params);
@@ -130,6 +134,8 @@ export async function registerActorAgentRoutes(
           id: facet.id,
           versionId: facet.versionId,
           slug: facet.slug,
+          fullName: facet.fullName,
+          displayVersion: facet.displayVersion,
           facetType: facet.facetType,
           status: facet.status,
           visibility: facet.visibility,

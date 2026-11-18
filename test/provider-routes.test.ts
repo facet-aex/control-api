@@ -52,6 +52,14 @@ async function getCurrentUser(user: string): Promise<{ id: string }> {
 }
 
 describe("provider routes", () => {
+  it("exposes the authenticated username for a personal provider slug", async () => {
+    const user = await app.inject({
+      method: "GET",
+      url: "/v1/me",
+      headers: { "x-facet-dev-user": "alice" },
+    });
+    expect(user.json()).toMatchObject({ user: { username: "alice" } });
+  });
   it("creates a provider and owner membership atomically", async () => {
     const response = await createProvider();
 

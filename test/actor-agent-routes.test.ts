@@ -37,6 +37,19 @@ class MemoryActorAgentStore implements ActorAgentStore {
     { fingerprint: string; record: PublishedActorRecord }
   >();
 
+  async listMyActors(userId: string) {
+    return this.actors
+      .filter((actor) => this.contexts.get(actor.id)?.providerId && userId)
+      .map((actor) => ({
+        id: actor.id,
+        versionId: actor.versionId,
+        fullName: `test/${actor.slug}`,
+        displayVersion: "v1",
+        status: actor.status,
+        registryTxHash: null,
+      }));
+  }
+
   async getActorPublishStatus(facetId: string) {
     const record = this.actors.find((actor) => actor.id === facetId);
     const context = this.contexts.get(facetId);
@@ -45,6 +58,8 @@ class MemoryActorAgentStore implements ActorAgentStore {
       providerId: context.providerId,
       facetId,
       versionId: record.versionId,
+      fullName: `alice-provider/${record.slug}`,
+      displayVersion: "1.0.0",
       status:
         record.status === "PUBLISHED"
           ? ("PUBLISHED" as const)
@@ -326,7 +341,9 @@ describe("1-step Hosted Actor and ERC-8004 A2A Agent publishing", () => {
       facet: { status: "REGISTRATION_PENDING", visibility: "PRIVATE" },
     });
     expect(Object.keys(first.json().facet).sort()).toEqual([
+      "displayVersion",
       "facetType",
+      "fullName",
       "id",
       "imageDigest",
       "slug",
@@ -343,7 +360,17 @@ describe("1-step Hosted Actor and ERC-8004 A2A Agent publishing", () => {
     expect(status.json()).toEqual({
       facetId: first.json().facet.id,
       versionId: first.json().facet.versionId,
+      fullName: `alice-provider/${payload.slug}`,
+      displayVersion: "1.0.0",
       status: "REGISTRATION_PENDING",
+    });
+    const mine = await app.inject({
+      method: "GET",
+      url: "/v1/actors/mine",
+      headers: { "x-facet-dev-user": "alice" },
+    });
+    expect(mine.json()).toMatchObject({
+      actors: [{ id: first.json().facet.id, status: "REGISTRATION_PENDING" }],
     });
     const forbidden = await app.inject({
       method: "GET",
