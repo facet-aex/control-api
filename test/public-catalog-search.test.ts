@@ -23,4 +23,36 @@ describe("catalog intent search", () => {
       relevance(facet, searchTerms("phân tích đường giá BTC trong ngắn hạn")),
     ).toBeGreaterThan(1);
   });
+
+  it("matches provider, facetName, and normalized Vietnamese text", () => {
+    const customActor = {
+      provider: "brian-gemini",
+      facetName: "ye-ye-ye",
+      facetDisplayName: "brian test",
+      description: "Actor phân tích dữ liệu chứng khoán Việt Nam",
+      category: "data-processing",
+      tags: ["actor"],
+    };
+
+    expect(relevance(customActor, searchTerms("ye"))).toBeGreaterThan(0);
+    expect(relevance(customActor, searchTerms("ye-ye-ye"))).toBeGreaterThan(0);
+    expect(
+      relevance(
+        { ...customActor, facetDisplayName: "Custom Actor" },
+        searchTerms("brian-gemini"),
+      ),
+    ).toBeGreaterThan(0);
+    expect(
+      relevance(
+        { ...customActor, facetDisplayName: "Custom Actor" },
+        searchTerms("brian-gemini/ye-ye-ye"),
+      ),
+    ).toBeGreaterThan(0);
+    expect(
+      relevance(customActor, searchTerms("chung khoan viet nam")),
+    ).toBeGreaterThan(0);
+    expect(
+      relevance(customActor, searchTerms("dữ liệu chứng khoán")),
+    ).toBeGreaterThan(0);
+  });
 });

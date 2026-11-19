@@ -108,14 +108,18 @@ const synonyms: Record<string, string> = {
   han: "term",
 };
 
+function normalizeSearchText(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/gu, "")
+    .replace(/đ/gu, "d")
+    .toLowerCase();
+}
+
 export function searchTerms(query: string): string[] {
   return [
     ...new Set(
-      query
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/gu, "")
-        .replace(/đ/gu, "d")
-        .toLowerCase()
+      normalizeSearchText(query)
         .match(/[a-z0-9]{2,}/gu)
         ?.map((word) => synonyms[word] ?? word)
         .filter((word) => !ignoredWords.has(word)) ?? [],
@@ -127,11 +131,20 @@ export function relevance(
   facet: Pick<
     PublicFacet,
     "facetDisplayName" | "description" | "category" | "tags"
-  >,
+  > &
+    Partial<Pick<PublicFacet, "provider" | "facetName">>,
   terms: string[],
 ): number {
-  const haystack =
-    `${facet.facetDisplayName} ${facet.description} ${facet.category} ${facet.tags.join(" ")}`.toLowerCase();
+  const haystack = normalizeSearchText(
+    [
+      facet.provider ?? "",
+      facet.facetName ?? "",
+      facet.facetDisplayName,
+      facet.description,
+      facet.category,
+      facet.tags.join(" "),
+    ].join(" "),
+  );
   return terms.reduce(
     (score, term) => score + (haystack.includes(term) ? 1 : 0),
     0,
