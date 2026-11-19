@@ -124,6 +124,11 @@ export async function registerActorAgentRoutes(
     return dependencies.service.listMyActors(identity);
   });
 
+  app.get("/v1/facets/mine", async (request) => {
+    const identity = await authenticate(request, dependencies.authenticator);
+    return dependencies.service.listMyFacets(identity);
+  });
+
   app.get(
     "/v1/actors/:provider/:facetName/versions/:version/publish-status",
     async (request) => {

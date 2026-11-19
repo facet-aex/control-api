@@ -3,6 +3,14 @@ import type { FacetType, PricingModel } from "../identifiers.js";
 export type ActorPublishStatus =
   "REGISTRATION_PENDING" | "PUBLISHED" | "FAILED";
 
+export type MyFacetStatus =
+  | "REGISTRATION_PENDING"
+  | "PUBLISHED"
+  | "FAILED"
+  | "DRAFT"
+  | "VALID"
+  | "DISABLED";
+
 export interface PublishActorCommand {
   facetName: string;
   facetDisplayName: string;
@@ -61,6 +69,24 @@ export interface MyActorSummary {
   registryTxHash: string | null;
 }
 
+export interface MyFacetSummary {
+  provider: string;
+  facetName: string;
+  facetDisplayName: string;
+  facetType: FacetType;
+  version: string;
+  category: string;
+  visibility: "PRIVATE" | "PUBLIC" | "UNLISTED";
+  status: MyFacetStatus;
+  pricingModel: PricingModel;
+  priceAtomic: string;
+  registryVerified: boolean;
+  registryTxHash: string | null;
+  errorCode: string | null;
+  createdAt: string;
+  publishedAt: string | null;
+}
+
 export interface ActorPublishStatusRecord {
   providerId: string;
   provider: string;
@@ -98,6 +124,7 @@ export interface PublishedFacetRegistryContext {
 
 export interface ActorAgentStore {
   listMyActors(userId: string): Promise<MyActorSummary[]>;
+  listMyFacets(userId: string): Promise<MyFacetSummary[]>;
   getActorPublishStatus(
     provider: string,
     facetName: string,

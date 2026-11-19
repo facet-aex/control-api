@@ -34,12 +34,24 @@ interface StoredActorItem {
   facetName: string;
   facetDisplayName: string;
   version: string;
+  category: string;
+  pricingModel: "PAY_PER_RUN" | "PAY_PER_RESULT";
+  priceAtomic: string;
   record: PublishedActorRecord;
+}
+
+interface StoredAgentItem {
+  providerId: string;
+  versionId: string;
+  category: string;
+  pricingModel: "PAY_PER_RUN" | "PAY_PER_RESULT";
+  priceAtomic: string;
+  record: PublishedAgentFacetRecord;
 }
 
 class MemoryActorAgentStore implements ActorAgentStore {
   readonly actors: StoredActorItem[] = [];
-  readonly agents: PublishedAgentFacetRecord[] = [];
+  readonly agents: StoredAgentItem[] = [];
   readonly contexts = new Map<string, PublishedFacetRegistryContext>();
   readonly verifiedTxs = new Map<string, string>();
   private readonly versions = new Set<string>();
@@ -59,6 +71,53 @@ class MemoryActorAgentStore implements ActorAgentStore {
         status: item.record.status,
         registryTxHash: this.verifiedTxs.get(item.versionId) ?? null,
       }));
+  }
+
+  async listMyFacets(userId: string) {
+    const actorItems = this.actors
+      .filter((item) => item.providerId === userId)
+      .map((item) => ({
+        provider: item.provider,
+        facetName: item.facetName,
+        facetDisplayName: item.facetDisplayName,
+        facetType: "ACTOR" as const,
+        version: item.version,
+        category: item.category,
+        visibility: item.record.visibility,
+        status: item.record.status,
+        pricingModel: item.pricingModel,
+        priceAtomic: item.priceAtomic,
+        registryVerified:
+          item.record.registryVerified || this.verifiedTxs.has(item.versionId),
+        registryTxHash: this.verifiedTxs.get(item.versionId) ?? null,
+        errorCode: null,
+        createdAt: "2026-11-19T10:00:00.000Z",
+        publishedAt: item.record.publishedAt
+          ? item.record.publishedAt.toISOString()
+          : null,
+      }));
+
+    const agentItems = this.agents
+      .filter((item) => item.providerId === userId)
+      .map((item) => ({
+        provider: item.record.provider,
+        facetName: item.record.facetName,
+        facetDisplayName: item.record.facetDisplayName,
+        facetType: "AGENT" as const,
+        version: item.record.version,
+        category: item.category,
+        visibility: item.record.visibility,
+        status: item.record.status,
+        pricingModel: item.pricingModel,
+        priceAtomic: item.priceAtomic,
+        registryVerified: this.verifiedTxs.has(item.versionId),
+        registryTxHash: this.verifiedTxs.get(item.versionId) ?? null,
+        errorCode: null,
+        createdAt: "2026-11-19T10:05:00.000Z",
+        publishedAt: item.record.publishedAt.toISOString(),
+      }));
+
+    return [...actorItems, ...agentItems];
   }
 
   async getActorPublishStatus(
@@ -140,6 +199,9 @@ class MemoryActorAgentStore implements ActorAgentStore {
       facetName: input.command.facetName,
       facetDisplayName: input.command.facetDisplayName,
       version,
+      category: input.command.category,
+      pricingModel: input.command.pricingModel ?? "PAY_PER_RUN",
+      priceAtomic: input.command.priceAtomic ?? "1000",
       record,
     });
     if (input.pending) {
@@ -192,7 +254,14 @@ class MemoryActorAgentStore implements ActorAgentStore {
       visibility: "PUBLIC",
       publishedAt: new Date("2026-11-16T12:00:00.000Z"),
     };
-    this.agents.push(record);
+    this.agents.push({
+      providerId: input.actorUserId,
+      versionId,
+      category: input.command.category,
+      pricingModel: input.command.pricingModel ?? "PAY_PER_RUN",
+      priceAtomic: input.command.priceAtomic ?? "1000",
+      record,
+    });
     this.contexts.set(
       `${input.providerUsername}/${input.command.facetName}@${version}`,
       {
@@ -416,6 +485,28 @@ describe("1-step Hosted Actor and ERC-8004 A2A Agent publishing under Option B",
       ],
     });
     expect(mine.body).not.toContain("versionId");
+
+    const allMine = await app.inject({
+      method: "GET",
+      url: "/v1/facets/mine",
+      headers: { "x-facet-dev-user": "alice-labs" },
+    });
+    expect(allMine.statusCode).toBe(200);
+    expect(allMine.json()).toMatchObject({
+      facets: [
+        {
+          provider: "alice-labs",
+          facetName: "payout-test",
+          facetDisplayName: "Payout Test",
+          facetType: "ACTOR",
+          version: "1.0.0",
+          visibility: "PRIVATE",
+          status: "REGISTRATION_PENDING",
+        },
+      ],
+    });
+    expect(allMine.body).not.toContain("versionId");
+    expect(allMine.body).not.toContain("facetId");
 
     const forbidden = await app.inject({
       method: "GET",
@@ -686,5 +777,89 @@ describe("1-step Hosted Actor and ERC-8004 A2A Agent publishing under Option B",
       },
     });
     expect(store.agents).toHaveLength(1);
+  });
+
+  it("lists all owned Facet versions across modalities on GET /v1/facets/mine without UUIDs", async () => {
+    const unauth = await app.inject({
+      method: "GET",
+      url: "/v1/facets/mine",
+    });
+    expect(unauth.statusCode).toBe(401);
+
+    const preview = await app.inject({
+      method: "POST",
+      url: "/v1/actors",
+      headers: {
+        "x-facet-dev-user": "alice-labs",
+        "idempotency-key": "mine-actor-1",
+      },
+      payload: {
+        facetName: "html-product-extractor",
+        facetDisplayName: "HTML Product Extractor",
+        version: "1.0.0",
+        description: "Extracts normalized products.",
+        category: "web-scraping",
+        inputSchema: {
+          type: "object",
+          properties: { html: { type: "string" } },
+        },
+        code: "export default async function run(input) { return [{ title: 'ok' }]; }",
+      },
+    });
+    expect(preview.statusCode).toBe(201);
+
+    const agent = await app.inject({
+      method: "POST",
+      url: "/v1/agent-facets",
+      headers: { "x-facet-dev-user": "alice-labs" },
+      payload: {
+        facetName: "vn-market-analyst-agent",
+        facetDisplayName: "VN Market Analyst Agent",
+        version: "1.0.0",
+        description: "Market agent.",
+        category: "a2a-agents",
+        erc8004TokenId: "42",
+        taskKind: "vn-market-analysis",
+        inputSchema: {
+          type: "object",
+          properties: { question: { type: "string" } },
+        },
+      },
+    });
+    expect(agent.statusCode).toBe(201);
+
+    const mine = await app.inject({
+      method: "GET",
+      url: "/v1/facets/mine",
+      headers: { "x-facet-dev-user": "alice-labs" },
+    });
+    expect(mine.statusCode).toBe(200);
+    expect(mine.json()).toEqual({
+      facets: [
+        expect.objectContaining({
+          provider: "alice-labs",
+          facetName: "html-product-extractor",
+          facetDisplayName: "HTML Product Extractor",
+          facetType: "ACTOR",
+          version: "1.0.0",
+          category: "web-scraping",
+          pricingModel: "PAY_PER_RUN",
+          priceAtomic: "1000",
+        }),
+        expect.objectContaining({
+          provider: "alice-labs",
+          facetName: "vn-market-analyst-agent",
+          facetDisplayName: "VN Market Analyst Agent",
+          facetType: "AGENT",
+          version: "1.0.0",
+          category: "a2a-agents",
+          status: "PUBLISHED",
+          visibility: "PUBLIC",
+        }),
+      ],
+    });
+    expect(mine.body).not.toContain("facetId");
+    expect(mine.body).not.toContain("versionId");
+    expect(mine.body).not.toContain("userId");
   });
 });

@@ -13,10 +13,13 @@ import {
   users,
 } from "../db/schema.js";
 import { AppError } from "../errors.js";
+import type { FacetType, PricingModel } from "../identifiers.js";
 import type {
   ActorAgentStore,
   ActorPublishStatus,
   MyActorSummary,
+  MyFacetStatus,
+  MyFacetSummary,
   PublishedActorRecord,
   PublishedAgentFacetRecord,
   PublishedFacetRegistryContext,
@@ -37,6 +40,29 @@ function toActorPublishStatus(
     return "FAILED";
   }
   return "REGISTRATION_PENDING";
+}
+
+function toMyFacetStatus(
+  facetType: FacetType,
+  versionStatus: "draft" | "valid" | "published" | "disabled",
+  jobStatus: ActorJobStatus,
+): MyFacetStatus {
+  if (facetType === "ACTOR") {
+    if (versionStatus === "published" || jobStatus === "confirmed") {
+      return "PUBLISHED";
+    }
+    if (jobStatus === "failed") {
+      return "FAILED";
+    }
+    if (versionStatus === "disabled") {
+      return "DISABLED";
+    }
+    return "REGISTRATION_PENDING";
+  }
+  if (versionStatus === "published") return "PUBLISHED";
+  if (versionStatus === "valid") return "VALID";
+  if (versionStatus === "disabled") return "DISABLED";
+  return "DRAFT";
 }
 
 function enrichManifestIds(
@@ -94,6 +120,64 @@ export class PostgresActorAgentStore implements ActorAgentStore {
         (row.jobStatus ?? null) as ActorJobStatus,
       ),
       registryTxHash: row.versionTxHash ?? row.jobTxHash ?? null,
+    }));
+  }
+
+  async listMyFacets(userId: string): Promise<MyFacetSummary[]> {
+    const rows = await this.db
+      .select({
+        provider: users.username,
+        facetName: facets.facetName,
+        facetDisplayName: facets.facetDisplayName,
+        facetType: facets.type,
+        version: facetVersions.version,
+        category: facets.category,
+        visibility: facets.visibility,
+        versionStatus: facetVersions.status,
+        pricingModel: facetVersions.pricingModel,
+        priceAtomic: facetVersions.priceAtomic,
+        registryVerified: facetVersions.registryVerified,
+        versionTxHash: facetVersions.registryTxHash,
+        jobStatus: actorRegistrationJobs.status,
+        jobTxHash: actorRegistrationJobs.txHash,
+        errorCode: actorRegistrationJobs.errorCode,
+        createdAt: facetVersions.createdAt,
+        publishedAt: facetVersions.publishedAt,
+      })
+      .from(facetVersions)
+      .innerJoin(facets, eq(facets.id, facetVersions.facetId))
+      .innerJoin(users, eq(users.id, facets.providerId))
+      .leftJoin(
+        actorRegistrationJobs,
+        eq(actorRegistrationJobs.versionId, facetVersions.id),
+      )
+      .where(eq(facets.providerId, userId))
+      .orderBy(desc(facetVersions.createdAt));
+
+    return rows.map((row) => ({
+      provider: row.provider,
+      facetName: row.facetName,
+      facetDisplayName: row.facetDisplayName,
+      facetType: row.facetType,
+      version: row.version,
+      category: row.category,
+      visibility: row.visibility.toUpperCase() as
+        "PRIVATE" | "PUBLIC" | "UNLISTED",
+      status: toMyFacetStatus(
+        row.facetType,
+        row.versionStatus,
+        (row.jobStatus ?? null) as ActorJobStatus,
+      ),
+      pricingModel:
+        row.pricingModel === "PAY_PER_RESULT"
+          ? "PAY_PER_RESULT"
+          : ("PAY_PER_RUN" as PricingModel),
+      priceAtomic: row.priceAtomic,
+      registryVerified: row.registryVerified,
+      registryTxHash: row.versionTxHash ?? row.jobTxHash ?? null,
+      errorCode: row.errorCode ?? null,
+      createdAt: row.createdAt.toISOString(),
+      publishedAt: row.publishedAt ? row.publishedAt.toISOString() : null,
     }));
   }
 

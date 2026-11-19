@@ -115,6 +115,15 @@ export class ActorAgentService {
     return { actors };
   }
 
+  async listMyFacets(identity: AuthenticatedIdentity) {
+    const actor = await this.providers.upsertUser(identity);
+    if (actor.status !== "active") {
+      throw new AppError("FORBIDDEN", "User account is disabled.", 403);
+    }
+    const facets = await this.store.listMyFacets(actor.id);
+    return { facets };
+  }
+
   async getActorPublishStatus(
     identity: AuthenticatedIdentity,
     provider: string,
