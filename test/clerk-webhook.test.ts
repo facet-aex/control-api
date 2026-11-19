@@ -76,6 +76,7 @@ describe("Clerk webhook user synchronization", () => {
       "alice",
       "way-too-long-username",
       "Bad_Case",
+      "pg30_cs3244",
       "double--dash",
       null,
     ]) {
