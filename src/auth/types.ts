@@ -1,6 +1,7 @@
 export interface AuthenticatedIdentity {
   subject: string;
   username?: string;
+  walletAddress?: string | undefined;
 }
 
 export interface AuthenticationInput {

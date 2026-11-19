@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import { AppError } from "../errors.js";
 import { isValidUsername } from "../identifiers.js";
+import { extractVerifiedClerkEvmWallet } from "./clerk-wallet.js";
 import type {
   ClerkWebhookUserEvent,
   ProviderStore,
@@ -14,9 +15,20 @@ export interface ClerkWebhookRouteDependencies {
   store: Pick<ProviderStore, "applyClerkWebhook">;
 }
 
+const webhookWeb3WalletSchema = z.object({
+  id: z.string().optional(),
+  web3_wallet: z.string().optional(),
+  verification: z
+    .object({ status: z.string().nullable().optional() })
+    .nullable()
+    .optional(),
+});
+
 const userMutationSchema = z.object({
   id: z.string().min(1),
   username: z.string().nullable().optional(),
+  primary_web3_wallet_id: z.string().nullable().optional(),
+  web3_wallets: z.array(webhookWeb3WalletSchema).optional(),
 });
 
 const userDeletedSchema = z.object({
@@ -92,9 +104,17 @@ export async function registerClerkWebhookRoutes(
             422,
           );
         }
+        const walletAddress = extractVerifiedClerkEvmWallet({
+          primaryId: parsed.primary_web3_wallet_id,
+          wallets: parsed.web3_wallets,
+        });
         mapped = {
           type: verifiedEvent.type,
-          data: { id: parsed.id, username },
+          data: {
+            id: parsed.id,
+            username,
+            ...(walletAddress ? { walletAddress } : {}),
+          },
         };
       } else if (verifiedEvent.type === "user.deleted") {
         const parsed = userDeletedSchema.parse(verifiedEvent.data);

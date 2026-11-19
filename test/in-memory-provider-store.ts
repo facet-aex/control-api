@@ -60,6 +60,12 @@ export class InMemoryProviderStore implements ProviderStore {
         existing.updatedAt = new Date();
         this.usersByUsername.set(existing.username, existing);
       }
+      if (!existing.walletAddress && identity.walletAddress) {
+        const now = new Date();
+        existing.walletAddress = identity.walletAddress;
+        existing.walletVerifiedAt = now;
+        existing.updatedAt = now;
+      }
       return existing;
     }
 
@@ -83,8 +89,8 @@ export class InMemoryProviderStore implements ProviderStore {
       id: randomUUID(),
       clerkId: identity.subject,
       username: identity.username,
-      walletAddress: null,
-      walletVerifiedAt: null,
+      walletAddress: identity.walletAddress ?? null,
+      walletVerifiedAt: identity.walletAddress ? now : null,
       status: "active",
       createdAt: now,
       updatedAt: now,
@@ -134,6 +140,10 @@ export class InMemoryProviderStore implements ProviderStore {
       this.usersByUsername.delete(existing.username);
       existing.username = username;
       existing.status = "active";
+      if (!existing.walletAddress && event.data.walletAddress) {
+        existing.walletAddress = event.data.walletAddress;
+        existing.walletVerifiedAt = now;
+      }
       existing.updatedAt = now;
       this.usersByUsername.set(username, existing);
       this.auditEvents.push({
@@ -151,8 +161,8 @@ export class InMemoryProviderStore implements ProviderStore {
       id: randomUUID(),
       clerkId: event.data.id,
       username,
-      walletAddress: null,
-      walletVerifiedAt: null,
+      walletAddress: event.data.walletAddress ?? null,
+      walletVerifiedAt: event.data.walletAddress ? now : null,
       status: "active",
       createdAt: now,
       updatedAt: now,

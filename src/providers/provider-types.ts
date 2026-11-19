@@ -4,7 +4,11 @@ import type { UserStatus } from "../identifiers.js";
 export type ClerkWebhookUserEvent =
   | {
       type: "user.created" | "user.updated";
-      data: { id: string; username: string };
+      data: {
+        id: string;
+        username: string;
+        walletAddress?: string | undefined;
+      };
     }
   | {
       type: "user.deleted";

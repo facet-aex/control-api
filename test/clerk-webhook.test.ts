@@ -181,4 +181,126 @@ describe("Clerk webhook user synchronization", () => {
       error: { code: "RESOURCE_CONFLICT" },
     });
   });
+
+  it("extracts verified EVM wallet on user.created and backfills user.updated without overwriting linked wallets", async () => {
+    const primaryWalletBody = JSON.stringify({
+      type: "user.created",
+      data: {
+        id: "user_wallet_1",
+        username: "wallet-sync1",
+        primary_web3_wallet_id: "w3w_primary",
+        web3_wallets: [
+          {
+            id: "w3w_unverified",
+            web3_wallet: "0x1111111111111111111111111111111111111111",
+            verification: { status: "unverified" },
+          },
+          {
+            id: "w3w_solana",
+            web3_wallet: "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
+            verification: { status: "verified" },
+          },
+          {
+            id: "w3w_other_evm",
+            web3_wallet: "0x2222222222222222222222222222222222222222",
+            verification: { status: "verified" },
+          },
+          {
+            id: "w3w_primary",
+            web3_wallet: "0x9265c1c87fc5fb3c72dc68b4d3a005de1e22c3cf",
+            verification: { status: "verified" },
+          },
+        ],
+      },
+    });
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/webhooks/clerk",
+      headers: signedHeaders(primaryWalletBody, "msg_wallet_created"),
+      payload: primaryWalletBody,
+    });
+    expect(created.statusCode).toBe(200);
+
+    const synced = await store.findUserByClerkId("user_wallet_1");
+    expect(synced?.walletAddress).toBe(
+      "0x9265c1c87fC5fb3C72Dc68b4D3A005dE1E22C3cf",
+    );
+    expect(synced?.walletVerifiedAt).toBeInstanceOf(Date);
+
+    // Custom wallet linked later must NOT be overwritten by a subsequent user.updated webhook.
+    const overwriteBody = JSON.stringify({
+      type: "user.updated",
+      data: {
+        id: "user_wallet_1",
+        username: "wallet-sync1",
+        primary_web3_wallet_id: "w3w_other",
+        web3_wallets: [
+          {
+            id: "w3w_other",
+            web3_wallet: "0x5189c4c1a14dc1a6845425b6c44d2b40c0b4f39b",
+            verification: { status: "verified" },
+          },
+        ],
+      },
+    });
+    const overwriteRes = await app.inject({
+      method: "POST",
+      url: "/v1/webhooks/clerk",
+      headers: signedHeaders(overwriteBody, "msg_wallet_no_overwrite"),
+      payload: overwriteBody,
+    });
+    expect(overwriteRes.statusCode).toBe(200);
+    expect(
+      (await store.findUserByClerkId("user_wallet_1"))?.walletAddress,
+    ).toBe("0x9265c1c87fC5fb3C72Dc68b4D3A005dE1E22C3cf");
+
+    // User created without a wallet gets backfilled on user.updated when a verified EVM wallet is added.
+    const noWalletBody = JSON.stringify({
+      type: "user.created",
+      data: { id: "user_wallet_2", username: "wallet-sync2", web3_wallets: [] },
+    });
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/v1/webhooks/clerk",
+          headers: signedHeaders(noWalletBody, "msg_no_wallet"),
+          payload: noWalletBody,
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(
+      (await store.findUserByClerkId("user_wallet_2"))?.walletAddress,
+    ).toBeNull();
+
+    const backfillBody = JSON.stringify({
+      type: "user.updated",
+      data: {
+        id: "user_wallet_2",
+        username: "wallet-sync2",
+        web3_wallets: [
+          {
+            id: "w3w_added",
+            web3_wallet: "0x5189c4c1a14dc1a6845425b6c44d2b40c0b4f39b",
+            verification: { status: "verified" },
+          },
+        ],
+      },
+    });
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/v1/webhooks/clerk",
+          headers: signedHeaders(backfillBody, "msg_backfill"),
+          payload: backfillBody,
+        })
+      ).statusCode,
+    ).toBe(200);
+    const backfilled = await store.findUserByClerkId("user_wallet_2");
+    expect(backfilled?.walletAddress).toBe(
+      "0x5189c4C1a14Dc1a6845425B6C44D2B40c0b4f39B",
+    );
+    expect(backfilled?.walletVerifiedAt).toBeInstanceOf(Date);
+  });
 });

@@ -2,6 +2,10 @@ import { createClerkClient, verifyToken } from "@clerk/backend";
 
 import { AppError } from "../errors.js";
 import { isValidUsername } from "../identifiers.js";
+import {
+  extractVerifiedClerkEvmWallet,
+  type ClerkWeb3WalletLike,
+} from "./clerk-wallet.js";
 import type {
   AuthenticatedIdentity,
   AuthenticationInput,
@@ -11,8 +15,15 @@ import type {
 export interface SyncedUserLookup {
   clerkId: string;
   username: string;
+  walletAddress?: string | null;
   status: "active" | "disabled";
 }
+
+export type ClerkUserFetcher = (clerkId: string) => Promise<{
+  username?: string | null;
+  primaryWeb3WalletId?: string | null;
+  web3Wallets?: readonly ClerkWeb3WalletLike[];
+}>;
 
 export interface ClerkAuthenticatorOptions {
   authorizedParties: string[];
@@ -22,15 +33,21 @@ export interface ClerkAuthenticatorOptions {
   findUserByClerkId?: (
     clerkId: string,
   ) => Promise<SyncedUserLookup | undefined>;
+  getUser?: ClerkUserFetcher;
 }
 
 export class ClerkAuthenticator implements IdentityAuthenticator {
-  private readonly clerkClient;
+  private readonly fetchUser: ClerkUserFetcher | null;
 
   constructor(private readonly options: ClerkAuthenticatorOptions) {
-    this.clerkClient = options.secretKey
-      ? createClerkClient({ secretKey: options.secretKey })
-      : null;
+    if (options.getUser) {
+      this.fetchUser = options.getUser;
+    } else if (options.secretKey) {
+      const clerkClient = createClerkClient({ secretKey: options.secretKey });
+      this.fetchUser = (clerkId) => clerkClient.users.getUser(clerkId);
+    } else {
+      this.fetchUser = null;
+    }
   }
 
   async authenticate(
@@ -83,11 +100,25 @@ export class ClerkAuthenticator implements IdentityAuthenticator {
             409,
           );
         }
+        if (!synced.walletAddress && this.fetchUser) {
+          try {
+            const user = await this.fetchUser(subject);
+            const walletAddress = extractVerifiedClerkEvmWallet({
+              primaryId: user.primaryWeb3WalletId,
+              wallets: user.web3Wallets,
+            });
+            if (walletAddress) {
+              return { subject, username: synced.username, walletAddress };
+            }
+          } catch {
+            // Preserve auth when user is already synced and Clerk REST is transiently unavailable.
+          }
+        }
         return { subject, username: synced.username };
       }
     }
 
-    if (!this.clerkClient) {
+    if (!this.fetchUser) {
       throw new AppError(
         "USERNAME_REQUIRED",
         "Set an 8-16 character lowercase kebab-case username in Clerk.",
@@ -97,7 +128,7 @@ export class ClerkAuthenticator implements IdentityAuthenticator {
 
     let user;
     try {
-      user = await this.clerkClient.users.getUser(subject);
+      user = await this.fetchUser(subject);
     } catch {
       throw new AppError(
         "CLERK_PROFILE_UNAVAILABLE",
@@ -114,6 +145,14 @@ export class ClerkAuthenticator implements IdentityAuthenticator {
       );
     }
 
-    return { subject, username: user.username };
+    const walletAddress = extractVerifiedClerkEvmWallet({
+      primaryId: user.primaryWeb3WalletId,
+      wallets: user.web3Wallets,
+    });
+    return {
+      subject,
+      username: user.username,
+      ...(walletAddress ? { walletAddress } : {}),
+    };
   }
 }

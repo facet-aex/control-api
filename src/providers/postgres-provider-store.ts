@@ -1,4 +1,4 @@
-import { and, eq, gt, isNull } from "drizzle-orm";
+import { and, eq, gt, isNull, sql } from "drizzle-orm";
 
 import type { AuthenticatedIdentity } from "../auth/types.js";
 import type { Database } from "../db/client.js";
@@ -59,19 +59,35 @@ export class PostgresProviderStore implements ProviderStore {
           403,
         );
       }
-      if (identity.username && identity.username !== existing.username) {
-        if (!isValidUsername(identity.username)) {
-          throw new AppError(
-            "USERNAME_REQUIRED",
-            "Set an 8-16 character lowercase kebab-case username.",
-            409,
-          );
-        }
+      const usernameChanged = Boolean(
+        identity.username && identity.username !== existing.username,
+      );
+      const shouldBackfillWallet = Boolean(
+        !existing.walletAddress && identity.walletAddress,
+      );
+      if (usernameChanged && !isValidUsername(identity.username!)) {
+        throw new AppError(
+          "USERNAME_REQUIRED",
+          "Set an 8-16 character lowercase kebab-case username.",
+          409,
+        );
+      }
+      if (usernameChanged || shouldBackfillWallet) {
         try {
+          const now = new Date();
           const updated = requiredRow(
             await this.database
               .update(users)
-              .set({ username: identity.username, updatedAt: new Date() })
+              .set({
+                ...(usernameChanged ? { username: identity.username! } : {}),
+                ...(shouldBackfillWallet
+                  ? {
+                      walletAddress: identity.walletAddress!,
+                      walletVerifiedAt: now,
+                    }
+                  : {}),
+                updatedAt: now,
+              })
               .where(eq(users.id, existing.id))
               .returning(),
             "an updated user",
@@ -100,18 +116,27 @@ export class PostgresProviderStore implements ProviderStore {
     }
 
     try {
+      const now = new Date();
       const user = requiredRow(
         await this.database
           .insert(users)
           .values({
             clerkId: identity.subject,
             username: identity.username,
+            walletAddress: identity.walletAddress ?? null,
+            walletVerifiedAt: identity.walletAddress ? now : null,
           })
           .onConflictDoUpdate({
             target: users.clerkId,
             set: {
               username: identity.username,
-              updatedAt: new Date(),
+              ...(identity.walletAddress
+                ? {
+                    walletAddress: sql`COALESCE(${users.walletAddress}, ${identity.walletAddress})`,
+                    walletVerifiedAt: sql`COALESCE(${users.walletVerifiedAt}, ${now.toISOString()}::timestamptz)`,
+                  }
+                : {}),
+              updatedAt: now,
             },
           })
           .returning(),
@@ -181,6 +206,8 @@ export class PostgresProviderStore implements ProviderStore {
             .values({
               clerkId: event.data.id,
               username,
+              walletAddress: event.data.walletAddress ?? null,
+              walletVerifiedAt: event.data.walletAddress ? now : null,
               status: "active",
               createdAt: now,
               updatedAt: now,
@@ -189,6 +216,12 @@ export class PostgresProviderStore implements ProviderStore {
               target: users.clerkId,
               set: {
                 username,
+                ...(event.data.walletAddress
+                  ? {
+                      walletAddress: sql`COALESCE(${users.walletAddress}, ${event.data.walletAddress})`,
+                      walletVerifiedAt: sql`COALESCE(${users.walletVerifiedAt}, ${now.toISOString()}::timestamptz)`,
+                    }
+                  : {}),
                 status: "active",
                 updatedAt: now,
               },
@@ -207,7 +240,13 @@ export class PostgresProviderStore implements ProviderStore {
           subjectType: "user",
           subjectId: user.id,
           requestId,
-          metadata: { clerkId: event.data.id, username },
+          metadata: {
+            clerkId: event.data.id,
+            username,
+            ...(event.data.walletAddress
+              ? { walletAddress: event.data.walletAddress }
+              : {}),
+          },
         });
       });
     } catch (error) {
