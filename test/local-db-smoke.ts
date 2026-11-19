@@ -21,9 +21,9 @@ import {
   importOperationCandidates,
   openApiImportJobs,
   outboxEvents,
-  providers,
   secretRefs,
   users,
+  walletLinkChallenges,
 } from "../src/db/schema.js";
 import { EndpointConfigService } from "../src/facets/endpoint-config-service.js";
 import { FacetDraftService } from "../src/facets/facet-draft-service.js";
@@ -125,13 +125,13 @@ const app = await buildApp({
 });
 
 const suffix = randomUUID();
-const alice = `db-smoke-alice-${suffix}`;
-const bob = `db-smoke-bob-${suffix}`;
-let providerId: string | undefined;
+const alice = `smka-${suffix.slice(0, 6)}`;
+const bob = `smkb-${suffix.slice(0, 6)}`;
+let aliceId: string | undefined;
+let bobId: string | undefined;
 const importJobIds: string[] = [];
 const apiSourceIds: string[] = [];
 const facetIds: string[] = [];
-const endpointConfigIds: string[] = [];
 const secretRefIds: string[] = [];
 
 function requireStatus(
@@ -145,24 +145,22 @@ function requireStatus(
 }
 
 try {
-  const created = await app.inject({
-    method: "POST",
-    url: "/v1/providers",
+  const aliceProfile = await app.inject({
+    method: "GET",
+    url: "/v1/me",
     headers: { "x-facet-dev-user": alice },
-    payload: {
-      slug: `db-smoke-${suffix}`,
-      name: "FACET database smoke provider",
-    },
   });
-  requireStatus(created.statusCode, 201, "create provider");
-  providerId = (created.json().provider as { id: string }).id;
+  requireStatus(aliceProfile.statusCode, 200, "provision alice");
+  const aliceUser = await providerStore.findUserByUsername(alice);
+  if (!aliceUser) throw new Error("alice user row missing");
+  aliceId = aliceUser.id;
 
   const payoutAccount = privateKeyToAccount(
     "0x1111111111111111111111111111111111111111111111111111111111111111",
   );
   const challengeResponse = await app.inject({
     method: "POST",
-    url: `/v1/providers/${providerId}/wallet-link-challenges`,
+    url: `/v1/providers/${alice}/wallet-link-challenges`,
     headers: { "x-facet-dev-user": alice },
     payload: {},
   });
@@ -179,13 +177,13 @@ try {
   const [walletLinked, walletReplayed] = await Promise.all([
     app.inject({
       method: "POST",
-      url: `/v1/providers/${providerId}/wallet-link`,
+      url: `/v1/providers/${alice}/wallet-link`,
       headers: { "x-facet-dev-user": alice },
       payload: walletPayload,
     }),
     app.inject({
       method: "POST",
-      url: `/v1/providers/${providerId}/wallet-link`,
+      url: `/v1/providers/${alice}/wallet-link`,
       headers: { "x-facet-dev-user": alice },
       payload: walletPayload,
     }),
@@ -199,24 +197,18 @@ try {
       `concurrent wallet challenge consumption: ${walletStatuses.join(",")}`,
     );
   }
-  const verifiedProvider = await providerStore.getProvider(providerId);
+  const verifiedUser = await providerStore.findUserByUsername(alice);
   if (
-    verifiedProvider?.walletAddress !== payoutAccount.address ||
-    !verifiedProvider.walletVerifiedAt
+    verifiedUser?.walletAddress !== payoutAccount.address ||
+    !verifiedUser.walletVerifiedAt
   ) {
     throw new Error("wallet proof was not persisted");
   }
 
-  const aliceProfile = await app.inject({
-    method: "GET",
-    url: "/v1/me",
-    headers: { "x-facet-dev-user": alice },
-  });
-  const aliceId = (aliceProfile.json().user as { id: string }).id;
   const previewQuota = new PostgresActorPreviewQuota(database.db);
   const quotaResults = await Promise.all(
     Array.from({ length: 12 }, () =>
-      previewQuota.consume(aliceId, new Date("2026-11-17T12:00:00.000Z")),
+      previewQuota.consume(aliceId!, new Date("2026-11-17T12:00:00.000Z")),
     ),
   );
   if (quotaResults.filter(Boolean).length !== 10) {
@@ -227,43 +219,28 @@ try {
   ) {
     throw new Error("Actor preview quota did not reset on the next UTC day");
   }
-  const finalOwnerRemoval = await app.inject({
-    method: "DELETE",
-    url: `/v1/providers/${providerId}/members/${aliceId}`,
-    headers: { "x-facet-dev-user": alice },
-  });
-  requireStatus(finalOwnerRemoval.statusCode, 409, "protect final owner");
 
   const bobProfile = await app.inject({
     method: "GET",
     url: "/v1/me",
     headers: { "x-facet-dev-user": bob },
   });
-  const bobId = (bobProfile.json().user as { id: string }).id;
-  const addOwner = await app.inject({
-    method: "PUT",
-    url: `/v1/providers/${providerId}/members/${bobId}`,
-    headers: { "x-facet-dev-user": alice },
-    payload: { role: "owner" },
-  });
-  requireStatus(addOwner.statusCode, 200, "add second owner");
+  requireStatus(bobProfile.statusCode, 200, "provision bob");
+  const bobUser = await providerStore.findUserByUsername(bob);
+  if (!bobUser) throw new Error("bob user row missing");
+  bobId = bobUser.id;
 
-  const removeFirstOwner = await app.inject({
-    method: "DELETE",
-    url: `/v1/providers/${providerId}/members/${aliceId}`,
+  const crossTenantChallenge = await app.inject({
+    method: "POST",
+    url: `/v1/providers/${alice}/wallet-link-challenges`,
     headers: { "x-facet-dev-user": bob },
+    payload: {},
   });
-  requireStatus(removeFirstOwner.statusCode, 204, "remove first owner");
-
-  const members = await app.inject({
-    method: "GET",
-    url: `/v1/providers/${providerId}/members`,
-    headers: { "x-facet-dev-user": bob },
-  });
-  requireStatus(members.statusCode, 200, "list memberships");
-  if ((members.json().memberships as unknown[]).length !== 1) {
-    throw new Error("membership smoke result did not retain exactly one owner");
-  }
+  requireStatus(
+    crossTenantChallenge.statusCode,
+    403,
+    "deny cross-user wallet challenge",
+  );
 
   const pasteContent =
     "openapi: 3.1.0\ninfo:\n  title: Smoke API\n  version: 1.0.0\npaths:\n  /status:\n    get: {}\n  /health:\n    get: {}\n";
@@ -272,7 +249,6 @@ try {
     url: "/v1/openapi-imports",
     headers: { "x-facet-dev-user": bob },
     payload: {
-      providerId,
       name: "FACET database smoke OpenAPI",
       source: {
         kind: "paste",
@@ -299,7 +275,6 @@ try {
     url: "/v1/openapi-imports",
     headers: { "x-facet-dev-user": bob },
     payload: {
-      providerId,
       name: "FACET database smoke URL OpenAPI",
       source: {
         kind: "url",
@@ -491,12 +466,11 @@ try {
     url: "/v1/facets",
     headers: { "x-facet-dev-user": bob },
     payload: {
-      providerId,
       importJobId: queuedJob.id,
       selections: pasteOperations.map((operation, index) => ({
         operationCandidateId: operation.id,
-        slug: `db-smoke-${index}-${suffix}`,
-        name: `Database smoke Facet ${index}`,
+        facetName: `db-smoke-${index}-${suffix.slice(0, 6)}`,
+        facetDisplayName: `Database smoke Facet ${index}`,
         category: "testing",
         tags: ["db-smoke"],
         sideEffectClass: "READ_ONLY",
@@ -509,10 +483,12 @@ try {
     );
   }
   const createdFacets = createdDrafts.json().facets as Array<{
-    id: string;
+    provider: string;
+    facetName: string;
+    facetDisplayName: string;
     draftVersion: {
-      id: string;
-      version: number;
+      version: string;
+      revision: number;
       sourceVersionId: string;
       validation: { warnings: Array<{ code: string }> };
     };
@@ -535,11 +511,18 @@ try {
   ) {
     throw new Error("Facet draft smoke result lost operation warnings");
   }
-  facetIds.push(...createdFacets.map((facet) => facet.id));
+  const dbCreatedFacets = await database.db
+    .select({ id: facets.id })
+    .from(facets)
+    .where(eq(facets.providerId, bobId));
+  facetIds.push(...dbCreatedFacets.map((facet) => facet.id));
+
+  const targetFacet = createdFacets[0]!;
+  const targetVersion = targetFacet.draftVersion.version;
 
   const createdSecret = await app.inject({
     method: "POST",
-    url: `/v1/providers/${providerId}/secrets`,
+    url: `/v1/providers/${bob}/secrets`,
     headers: { "x-facet-dev-user": bob },
     payload: {
       kind: "API_KEY",
@@ -555,7 +538,7 @@ try {
   secretRefIds.push(secretRefId);
   const rotatedSecret = await app.inject({
     method: "POST",
-    url: `/v1/providers/${providerId}/secrets/${secretRefId}/rotate`,
+    url: `/v1/providers/${bob}/secrets/${secretRefId}/rotate`,
     headers: { "x-facet-dev-user": bob },
     payload: { value: `db-smoke-rotated-${suffix}` },
   });
@@ -585,10 +568,10 @@ try {
 
   const configuredEndpoint = await app.inject({
     method: "PUT",
-    url: `/v1/facet-versions/${createdFacets[0]!.draftVersion.id}/endpoint-config`,
+    url: `/v1/facets/${bob}/${targetFacet.facetName}/versions/${targetVersion}/endpoint-config`,
     headers: { "x-facet-dev-user": bob },
     payload: {
-      version: createdFacets[0]!.draftVersion.version,
+      revision: targetFacet.draftVersion.revision,
       baseUrl: "https://api.example.com",
       auth: {
         kind: "API_KEY_HEADER",
@@ -604,25 +587,22 @@ try {
   if (configuredEndpoint.body.includes("api.example.com")) {
     throw new Error("endpoint smoke response leaked the protected base URL");
   }
-  endpointConfigIds.push(
-    (configuredEndpoint.json().endpointConfig as { id: string }).id,
-  );
   const configuredRevision = (
-    configuredEndpoint.json().endpointConfig as { facetVersionVersion: number }
-  ).facetVersionVersion;
+    configuredEndpoint.json().endpointConfig as { facetVersionRevision: number }
+  ).facetVersionRevision;
   const validatedDraft = await app.inject({
     method: "POST",
-    url: `/v1/facet-versions/${createdFacets[0]!.draftVersion.id}/validate`,
+    url: `/v1/facets/${bob}/${targetFacet.facetName}/versions/${targetVersion}/validate`,
     headers: { "x-facet-dev-user": bob },
     payload: {
-      version: configuredRevision,
+      revision: configuredRevision,
       warningAcknowledgements: [],
     },
   });
   requireStatus(validatedDraft.statusCode, 200, "validate configured draft");
   const firstValidation = validatedDraft.json().facetVersion as {
     status: "DRAFT" | "VALID";
-    version: number;
+    revision: number;
     validation: { warnings: Array<{ warningId: string }> };
   };
   let finalValidation = firstValidation;
@@ -635,10 +615,10 @@ try {
     }
     const acknowledgedDraft = await app.inject({
       method: "POST",
-      url: `/v1/facet-versions/${createdFacets[0]!.draftVersion.id}/validate`,
+      url: `/v1/facets/${bob}/${targetFacet.facetName}/versions/${targetVersion}/validate`,
       headers: { "x-facet-dev-user": bob },
       payload: {
-        version: firstValidation.version,
+        revision: firstValidation.revision,
         warningAcknowledgements: warningIds.map((warningId) => ({
           warningId,
           reason: "Accepted for the Phase 1 database smoke fixture.",
@@ -661,29 +641,30 @@ try {
 
   const publishedDraft = await app.inject({
     method: "POST",
-    url: `/v1/facet-versions/${createdFacets[0]!.draftVersion.id}/publish`,
+    url: `/v1/facets/${bob}/${targetFacet.facetName}/versions/${targetVersion}/publish`,
     headers: { "x-facet-dev-user": bob },
     payload: {
-      version: finalValidation.version,
+      revision: finalValidation.revision,
       visibility: "PUBLIC",
     },
   });
   requireStatus(publishedDraft.statusCode, 200, "publish valid Facet version");
   const publication = publishedDraft.json() as {
     facet: {
-      id: string;
+      provider: string;
+      facetName: string;
       status: string;
       visibility: string;
-      currentPublishedVersionId: string;
+      currentPublishedVersion: string;
     };
-    facetVersion: { id: string; status: string; contentHash: string };
+    facetVersion: { version: string; status: string; contentHash: string };
   };
   if (
-    publication.facet.id !== createdFacets[0]!.id ||
+    publication.facet.provider !== bob ||
+    publication.facet.facetName !== targetFacet.facetName ||
     publication.facet.status !== "PUBLISHED" ||
     publication.facet.visibility !== "PUBLIC" ||
-    publication.facet.currentPublishedVersionId !==
-      createdFacets[0]!.draftVersion.id ||
+    publication.facet.currentPublishedVersion !== targetVersion ||
     publication.facetVersion.status !== "PUBLISHED" ||
     !publication.facetVersion.contentHash.startsWith("sha256:")
   ) {
@@ -694,9 +675,17 @@ try {
     url: "/v1/catalog/facets?limit=20",
   });
   requireStatus(catalogList.statusCode, 200, "list published public Facets");
-  const publicItems = (catalogList.json() as { facets: Array<{ id: string }> })
-    .facets;
-  if (!publicItems.some((item) => item.id === publication.facet.id)) {
+  const publicItems = (
+    catalogList.json() as {
+      facets: Array<{ provider: string; facetName: string }>;
+    }
+  ).facets;
+  if (
+    !publicItems.some(
+      (item) =>
+        item.provider === bob && item.facetName === targetFacet.facetName,
+    )
+  ) {
     throw new Error("published public Facet is missing from catalog");
   }
   const intentSearch = await app.inject({
@@ -705,14 +694,19 @@ try {
   });
   requireStatus(intentSearch.statusCode, 200, "search by intent words");
   if (
-    !(intentSearch.json() as { facets: Array<{ id: string }> }).facets.some(
-      (item) => item.id === publication.facet.id,
+    !(
+      intentSearch.json() as {
+        facets: Array<{ provider: string; facetName: string }>;
+      }
+    ).facets.some(
+      (item) =>
+        item.provider === bob && item.facetName === targetFacet.facetName,
     )
   )
     throw new Error("intent search did not find the published Facet");
   const catalogDetail = await app.inject({
     method: "GET",
-    url: `/v1/catalog/facets/${publication.facet.id}`,
+    url: `/v1/catalog/facets/${bob}/${targetFacet.facetName}`,
   });
   requireStatus(catalogDetail.statusCode, 200, "read published public Facet");
   if (
@@ -722,10 +716,10 @@ try {
   }
   const repeatedPublication = await app.inject({
     method: "POST",
-    url: `/v1/facet-versions/${createdFacets[0]!.draftVersion.id}/publish`,
+    url: `/v1/facets/${bob}/${targetFacet.facetName}/versions/${targetVersion}/publish`,
     headers: { "x-facet-dev-user": bob },
     payload: {
-      version: finalValidation.version + 1,
+      revision: finalValidation.revision + 1,
       visibility: "PUBLIC",
     },
   });
@@ -734,13 +728,13 @@ try {
     409,
     "reject repeated publication",
   );
-  const publishedRevision = finalValidation.version + 1;
+  const publishedRevision = finalValidation.revision + 1;
   const publishedRevalidation = await app.inject({
     method: "POST",
-    url: `/v1/facet-versions/${createdFacets[0]!.draftVersion.id}/validate`,
+    url: `/v1/facets/${bob}/${targetFacet.facetName}/versions/${targetVersion}/validate`,
     headers: { "x-facet-dev-user": bob },
     payload: {
-      version: publishedRevision,
+      revision: publishedRevision,
       warningAcknowledgements: [],
     },
   });
@@ -751,10 +745,10 @@ try {
   );
   const publishedReconfiguration = await app.inject({
     method: "PUT",
-    url: `/v1/facet-versions/${createdFacets[0]!.draftVersion.id}/endpoint-config`,
+    url: `/v1/facets/${bob}/${targetFacet.facetName}/versions/${targetVersion}/endpoint-config`,
     headers: { "x-facet-dev-user": bob },
     payload: {
-      version: publishedRevision,
+      revision: publishedRevision,
       baseUrl: "https://changed.example.com",
       auth: { kind: "NONE" },
       timeoutMs: 15_000,
@@ -770,7 +764,7 @@ try {
 
   const usedSecretRevoke = await app.inject({
     method: "DELETE",
-    url: `/v1/providers/${providerId}/secrets/${secretRefId}`,
+    url: `/v1/providers/${bob}/secrets/${secretRefId}`,
     headers: { "x-facet-dev-user": bob },
   });
   requireStatus(
@@ -784,7 +778,7 @@ try {
       metadata: auditEvents.metadata,
     })
     .from(auditEvents)
-    .where(eq(auditEvents.providerId, providerId));
+    .where(eq(auditEvents.providerId, bobId));
   const serializedAudit = JSON.stringify(safeAuditRows);
   if (
     serializedAudit.includes("db-smoke-secret") ||
@@ -808,10 +802,13 @@ try {
       .where(inArray(facetVersions.facetId, facetIds));
     await database.db.delete(facets).where(inArray(facets.id, facetIds));
   }
-  if (endpointConfigIds.length > 0) {
+  const smokeUserIds = [aliceId, bobId].filter((id): id is string =>
+    Boolean(id),
+  );
+  if (smokeUserIds.length > 0) {
     await database.db
       .delete(endpointConfigs)
-      .where(inArray(endpointConfigs.id, endpointConfigIds));
+      .where(inArray(endpointConfigs.providerId, smokeUserIds));
   }
   if (secretRefIds.length > 0) {
     await database.db
@@ -835,18 +832,19 @@ try {
       .where(eq(apiSourceVersions.apiSourceId, apiSourceId));
     await database.db.delete(apiSources).where(eq(apiSources.id, apiSourceId));
   }
-  if (providerId) {
+  if (smokeUserIds.length > 0) {
+    await database.db
+      .delete(walletLinkChallenges)
+      .where(inArray(walletLinkChallenges.userId, smokeUserIds));
     await database.db
       .delete(auditEvents)
-      .where(eq(auditEvents.providerId, providerId));
+      .where(inArray(auditEvents.providerId, smokeUserIds));
     await database.db
       .delete(outboxEvents)
-      .where(eq(outboxEvents.aggregateId, providerId));
-    await database.db.delete(providers).where(eq(providers.id, providerId));
+      .where(inArray(outboxEvents.aggregateId, smokeUserIds));
+    await database.db.delete(users).where(inArray(users.id, smokeUserIds));
   }
-  await database.db
-    .delete(users)
-    .where(inArray(users.externalSubject, [`local:${alice}`, `local:${bob}`]));
+  await database.db.delete(users).where(inArray(users.username, [alice, bob]));
   await app.close();
   await database.close();
   await rm(objectRoot, { recursive: true, force: true });

@@ -40,8 +40,9 @@ interface BuildFacetDraftManifestInput {
   facetId: string;
   versionId: string;
   providerId: string;
+  provider: string;
   sourceVersionId: string;
-  displayVersion: string;
+  version: string;
   sourceOperationPointer: string;
   selection: FacetDraftSelection;
   candidate: StoredOperationCandidate;
@@ -86,15 +87,16 @@ export function buildFacetDraftManifest(input: BuildFacetDraftManifestInput) {
     schemaVersion: "facet.manifest/v1" as const,
     facetId: input.facetId,
     versionId: input.versionId,
-    displayVersion: input.displayVersion,
     providerId: input.providerId,
-    type: "EXTERNAL_HTTP_API" as const,
-    name: input.selection.name,
-    slug: input.selection.slug,
+    provider: input.provider,
+    facetName: input.selection.facetName,
+    facetDisplayName: input.selection.facetDisplayName,
+    version: input.version,
+    type: "API" as const,
     summary:
       input.selection.summary ??
       input.candidate.summary ??
-      input.selection.name,
+      input.selection.facetDisplayName,
     description: input.selection.description ?? "",
     category: input.selection.category,
     tags: [...new Set(input.selection.tags)].sort(),

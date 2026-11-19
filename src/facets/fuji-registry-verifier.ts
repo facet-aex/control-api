@@ -19,7 +19,8 @@ const FACET_ACTOR_REGISTRY_ABI = parseAbi([
 
 export interface ExpectedFacetRegistration {
   facetId: string;
-  facetType: "EXTERNAL_HTTP_API" | "HOSTED_ACTOR" | "AUTONOMOUS_AGENT";
+  versionId?: string | undefined;
+  facetType: "API" | "ACTOR" | "AGENT";
   imageDigest?: string | null | undefined;
   pricingModel: "PAY_PER_RUN" | "PAY_PER_RESULT";
   priceAtomic: string;
@@ -42,8 +43,8 @@ export interface RegistryVerifier {
 function toFacetTypeCode(
   facetType: ExpectedFacetRegistration["facetType"],
 ): number {
-  if (facetType === "HOSTED_ACTOR") return 1;
-  if (facetType === "AUTONOMOUS_AGENT") return 2;
+  if (facetType === "ACTOR") return 1;
+  if (facetType === "AGENT") return 2;
   return 0;
 }
 
@@ -81,10 +82,12 @@ export function registrationMatches(
   },
   expected: ExpectedFacetRegistration,
 ): RegistryVerificationResult {
-  const expectedKey = uuidToFacetKey(expected.facetId);
+  const primaryKey = uuidToFacetKey(expected.versionId ?? expected.facetId);
+  const legacyKey = uuidToFacetKey(expected.facetId);
   if (
     observed.facetId &&
-    observed.facetId.toLowerCase() !== expectedKey.toLowerCase()
+    observed.facetId.toLowerCase() !== primaryKey.toLowerCase() &&
+    observed.facetId.toLowerCase() !== legacyKey.toLowerCase()
   ) {
     return {
       verified: false,
@@ -104,7 +107,7 @@ export function registrationMatches(
     };
   }
   if (
-    expected.facetType === "HOSTED_ACTOR" &&
+    expected.facetType === "ACTOR" &&
     observed.imageDigest.toLowerCase() !==
       toBytes32Digest(expected.imageDigest).toLowerCase()
   ) {
@@ -134,7 +137,7 @@ export function registrationMatches(
     };
   }
   if (
-    expected.facetType === "AUTONOMOUS_AGENT" &&
+    expected.facetType === "AGENT" &&
     observed.erc8004TokenId !== BigInt(expected.erc8004TokenId ?? "0")
   ) {
     return {
@@ -182,7 +185,8 @@ export class FujiRegistryVerifier implements RegistryVerifier {
       };
     }
 
-    const expectedKey = uuidToFacetKey(expected.facetId);
+    const primaryKey = uuidToFacetKey(expected.versionId ?? expected.facetId);
+    const legacyKey = uuidToFacetKey(expected.facetId);
     let matchedEvent: {
       facetId: Hex;
       facetType: number;
@@ -203,7 +207,11 @@ export class FujiRegistryVerifier implements RegistryVerifier {
         });
         if (decoded.eventName === "FacetRegistered") {
           const args = decoded.args;
-          if (args.facetId.toLowerCase() === expectedKey.toLowerCase()) {
+          const observedKey = args.facetId.toLowerCase();
+          if (
+            observedKey === primaryKey.toLowerCase() ||
+            observedKey === legacyKey.toLowerCase()
+          ) {
             matchedEvent = {
               facetId: args.facetId,
               facetType: Number(args.facetType),
@@ -232,11 +240,12 @@ export class FujiRegistryVerifier implements RegistryVerifier {
     const eventCheck = registrationMatches(matchedEvent, expected);
     if (!eventCheck.verified) return eventCheck;
 
+    const lookupKey = matchedEvent.facetId;
     const onChainState = (await this.client.readContract({
       address: this.registryAddress,
       abi: FACET_ACTOR_REGISTRY_ABI,
       functionName: "getFacet",
-      args: [expectedKey],
+      args: [lookupKey],
     })) as {
       facetType: number;
       imageDigest: Hex;
@@ -250,7 +259,7 @@ export class FujiRegistryVerifier implements RegistryVerifier {
 
     return registrationMatches(
       {
-        facetId: expectedKey,
+        facetId: lookupKey,
         facetType: Number(onChainState.facetType),
         imageDigest: onChainState.imageDigest,
         pricingModel: Number(onChainState.pricingModel),

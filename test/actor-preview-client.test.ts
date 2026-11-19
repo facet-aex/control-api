@@ -27,12 +27,12 @@ test("sends preview to the internal executor with its token and returns bounded 
   const request = {
     runId: "a",
     facetId: "b",
-    facetVersionId: "c",
-    facetType: "HOSTED_ACTOR" as const,
+    facetType: "ACTOR" as const,
     input: { value: "one" },
     timeoutMs: 15_000,
     actorBundle: {
       code: "export default async () => ({})",
+      entrypoint: "run" as const,
       imageDigest: `sha256:${"a".repeat(64)}`,
     },
   };

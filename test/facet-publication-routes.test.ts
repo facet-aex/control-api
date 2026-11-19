@@ -19,18 +19,35 @@ import { InMemoryProviderStore } from "./in-memory-provider-store.js";
 class MemoryPublicationStore implements FacetPublicationStore {
   readonly contexts = new Map<string, FacetPublicationContext>();
 
-  seed(providerId: string, status: "draft" | "valid" = "valid") {
+  private key(provider: string, facetName: string, version: string) {
+    return `${provider}/${facetName}@${version}`;
+  }
+
+  seed(
+    providerId: string,
+    options: {
+      provider?: string;
+      facetName?: string;
+      version?: string;
+      status?: "draft" | "valid";
+    } = {},
+  ) {
+    const provider = options.provider ?? "alice-labs";
+    const facetName = options.facetName ?? "weather-now";
+    const version = options.version ?? "0.1.0";
+    const status = options.status ?? "valid";
     const facetId = randomUUID();
     const facetVersionId = randomUUID();
     const manifest = {
       schemaVersion: "facet.manifest/v1",
       facetId,
       versionId: facetVersionId,
-      displayVersion: "0.1.0",
       providerId,
-      type: "EXTERNAL_HTTP_API",
-      name: "Weather",
-      slug: "weather",
+      provider,
+      facetName,
+      facetDisplayName: "Weather",
+      version,
+      type: "API",
       summary: "Weather",
       description: "",
       category: "weather",
@@ -57,14 +74,18 @@ class MemoryPublicationStore implements FacetPublicationStore {
         sourceOperationPointer: "#/paths/~1weather/get",
       },
     };
-    this.contexts.set(facetVersionId, {
+    this.contexts.set(this.key(provider, facetName, version), {
       facetId,
       facetVersionId,
       providerId,
-      displayVersion: "0.1.0",
+      provider,
+      facetName,
+      facetDisplayName: "Weather",
+      facetType: "API",
+      version,
       facetStatus: "draft",
       facetVersionStatus: status,
-      version: 3,
+      revision: 3,
       manifest,
       validationStatus: status === "valid" ? "valid" : "invalid",
       endpointConfigured: true,
@@ -72,14 +93,16 @@ class MemoryPublicationStore implements FacetPublicationStore {
     return facetVersionId;
   }
 
-  async getContext(facetVersionId: string) {
-    return this.contexts.get(facetVersionId);
+  async getContextByName(provider: string, facetName: string, version: string) {
+    return this.contexts.get(this.key(provider, facetName, version));
   }
 
   async publish(input: Parameters<FacetPublicationStore["publish"]>[0]) {
-    const current = this.contexts.get(input.facetVersionId);
+    const current = [...this.contexts.values()].find(
+      (item) => item.facetVersionId === input.facetVersionId,
+    );
     if (!current) return undefined;
-    if (current.version !== input.expectedVersion) {
+    if (current.revision !== input.expectedRevision) {
       throw new AppError(
         "VERSION_PRECONDITION_FAILED",
         "Facet version changed before publication.",
@@ -100,22 +123,27 @@ class MemoryPublicationStore implements FacetPublicationStore {
     const publishedAt = new Date().toISOString();
     const manifest = { ...current.manifest, visibility: input.visibility };
     const saved: PublishedFacetVersion = {
-      facetId: current.facetId,
-      facetVersionId: current.facetVersionId,
-      displayVersion: current.displayVersion,
+      provider: current.provider,
+      facetName: current.facetName,
+      facetDisplayName: current.facetDisplayName,
+      facetType: current.facetType,
+      version: current.version,
       visibility: input.visibility,
       contentHash: hashFacetManifest(manifest),
       publishedAt,
-      facetVersion: current.version + 1,
+      facetVersionRevision: current.revision + 1,
       facetRevision: 2,
     };
-    this.contexts.set(current.facetVersionId, {
-      ...current,
-      facetStatus: "published",
-      facetVersionStatus: "published",
-      version: saved.facetVersion,
-      manifest,
-    });
+    this.contexts.set(
+      this.key(current.provider, current.facetName, current.version),
+      {
+        ...current,
+        facetStatus: "published",
+        facetVersionStatus: "published",
+        revision: saved.facetVersionRevision,
+        manifest,
+      },
+    );
     return saved;
   }
 }
@@ -145,87 +173,95 @@ beforeEach(async () => {
 
 afterEach(async () => app.close());
 
-async function createProvider(user = "alice") {
-  const response = await app.inject({
-    method: "POST",
-    url: "/v1/providers",
-    headers: { "x-facet-dev-user": user },
-    payload: { slug: `${user}-publish`, name: `${user} Publish` },
+async function ensureUserId(username = "alice-labs"): Promise<string> {
+  const user = await providers.upsertUser({
+    subject: `local:${username}`,
+    username,
   });
-  return response.json().provider.id as string;
+  return user.id;
 }
 
-describe("Facet publication", () => {
-  it("publishes one valid version and atomically advances the Facet pointer", async () => {
-    const providerId = await createProvider();
-    const versionId = publications.seed(providerId);
+describe("Facet publication (Option B)", () => {
+  it("publishes one valid version and returns PublishFacetVersionResponse v0.15 without UUIDs", async () => {
+    const providerId = await ensureUserId("alice-labs");
+    publications.seed(providerId);
 
     const response = await app.inject({
       method: "POST",
-      url: `/v1/facet-versions/${versionId}/publish`,
-      headers: { "x-facet-dev-user": "alice" },
-      payload: { version: 3, visibility: "PUBLIC" },
+      url: "/v1/facets/alice-labs/weather-now/versions/0.1.0/publish",
+      headers: { "x-facet-dev-user": "alice-labs" },
+      payload: { revision: 3, visibility: "PUBLIC" },
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({
+    expect(response.json()).toEqual({
       facet: {
+        provider: "alice-labs",
+        facetName: "weather-now",
+        facetDisplayName: "Weather",
+        facetType: "API",
         status: "PUBLISHED",
         visibility: "PUBLIC",
-        currentPublishedVersionId: versionId,
-        version: 2,
+        currentPublishedVersion: "0.1.0",
+        revision: 2,
       },
       facetVersion: {
-        id: versionId,
+        provider: "alice-labs",
+        facetName: "weather-now",
+        version: "0.1.0",
         status: "PUBLISHED",
         visibility: "PUBLIC",
-        version: 4,
+        contentHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
         publishedAt: expect.any(String),
+        revision: 4,
       },
     });
   });
 
   it("rejects invalid, stale, repeated and cross-provider publication", async () => {
-    const providerId = await createProvider();
-    const draftId = publications.seed(providerId, "draft");
+    const providerId = await ensureUserId("alice-labs");
+    publications.seed(providerId, {
+      facetName: "draft-api",
+      status: "draft",
+    });
     const invalid = await app.inject({
       method: "POST",
-      url: `/v1/facet-versions/${draftId}/publish`,
-      headers: { "x-facet-dev-user": "alice" },
-      payload: { version: 3, visibility: "PUBLIC" },
+      url: "/v1/facets/alice-labs/draft-api/versions/0.1.0/publish",
+      headers: { "x-facet-dev-user": "alice-labs" },
+      payload: { revision: 3, visibility: "PUBLIC" },
     });
     expect(invalid.statusCode).toBe(409);
 
-    const validId = publications.seed(providerId);
+    publications.seed(providerId, { facetName: "valid-api" });
     const stale = await app.inject({
       method: "POST",
-      url: `/v1/facet-versions/${validId}/publish`,
-      headers: { "x-facet-dev-user": "alice" },
-      payload: { version: 2, visibility: "PUBLIC" },
+      url: "/v1/facets/alice-labs/valid-api/versions/0.1.0/publish",
+      headers: { "x-facet-dev-user": "alice-labs" },
+      payload: { revision: 2, visibility: "PUBLIC" },
     });
     expect(stale.statusCode).toBe(412);
 
     const first = await app.inject({
       method: "POST",
-      url: `/v1/facet-versions/${validId}/publish`,
-      headers: { "x-facet-dev-user": "alice" },
-      payload: { version: 3, visibility: "UNLISTED" },
+      url: "/v1/facets/alice-labs/valid-api/versions/0.1.0/publish",
+      headers: { "x-facet-dev-user": "alice-labs" },
+      payload: { revision: 3, visibility: "UNLISTED" },
     });
     expect(first.statusCode).toBe(200);
     const repeated = await app.inject({
       method: "POST",
-      url: `/v1/facet-versions/${validId}/publish`,
-      headers: { "x-facet-dev-user": "alice" },
-      payload: { version: 4, visibility: "PUBLIC" },
+      url: "/v1/facets/alice-labs/valid-api/versions/0.1.0/publish",
+      headers: { "x-facet-dev-user": "alice-labs" },
+      payload: { revision: 4, visibility: "PUBLIC" },
     });
     expect(repeated.statusCode).toBe(409);
 
-    const otherId = publications.seed(providerId);
+    publications.seed(providerId, { facetName: "other-api" });
     const forbidden = await app.inject({
       method: "POST",
-      url: `/v1/facet-versions/${otherId}/publish`,
-      headers: { "x-facet-dev-user": "mallory" },
-      payload: { version: 3, visibility: "PUBLIC" },
+      url: "/v1/facets/alice-labs/other-api/versions/0.1.0/publish",
+      headers: { "x-facet-dev-user": "mallory-x" },
+      payload: { revision: 3, visibility: "PUBLIC" },
     });
     expect(forbidden.statusCode).toBe(403);
   });

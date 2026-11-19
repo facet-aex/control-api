@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
 
 import { buildApp } from "../src/app.js";
+import type {
+  PreviewExecutionRequest,
+  PreviewExecutionResponse,
+} from "../src/facets/actor-preview.js";
 import { LocalAuthenticator } from "../src/auth/local-authenticator.js";
 import { ProviderService } from "../src/providers/provider-service.js";
 import { InMemoryProviderStore } from "./in-memory-provider-store.js";
@@ -21,7 +25,9 @@ afterEach(async () => {
 async function testApp(
   options: {
     consumeQuota?: () => Promise<boolean>;
-    execute?: (request: unknown) => Promise<unknown>;
+    execute?: (
+      request: PreviewExecutionRequest,
+    ) => Promise<PreviewExecutionResponse>;
   } = {},
 ) {
   const authenticator = new LocalAuthenticator();
@@ -64,20 +70,8 @@ async function testApp(
   return app;
 }
 
-async function providerIdFor(app: Awaited<ReturnType<typeof buildApp>>) {
-  const created = await app.inject({
-    method: "POST",
-    url: "/v1/providers",
-    headers: { "x-facet-dev-user": "alice" },
-    payload: { slug: "alice-studio", name: "Alice Studio" },
-  });
-  expect(created.statusCode).toBe(201);
-  return created.json().provider.id as string;
-}
-
-function previewPayload(providerId: string) {
+function previewPayload() {
   return {
-    providerId,
     code: "export default async function run(input) { return [{ echoed: input.value }]; }",
     inputSchema: {
       type: "object",
@@ -88,11 +82,10 @@ function previewPayload(providerId: string) {
   };
 }
 
-test("authorizes and executes distinct preview inputs without publishing", async () => {
+test("authorizes and executes distinct preview inputs using uppercase ACTOR without providerId or facetVersionId", async () => {
   const app = await testApp();
-  const providerId = await providerIdFor(app);
-  const payload = previewPayload(providerId);
-  const preview = (value: string, user = "alice") =>
+  const payload = previewPayload();
+  const preview = (value: string, user = "alice-labs") =>
     app.inject({
       method: "POST",
       url: "/v1/actors/preview",
@@ -106,20 +99,28 @@ test("authorizes and executes distinct preview inputs without publishing", async
   expect(first.json().dataset).toEqual([{ echoed: "one" }]);
   expect(second.json().dataset).toEqual([{ echoed: "two" }]);
   expect(executorCalls).toHaveLength(2);
-  expect((await preview("secret", "bob")).statusCode).toBe(403);
+  expect(executorCalls[0]).toMatchObject({ facetType: "ACTOR" });
+  expect(executorCalls[0]).not.toHaveProperty("facetVersionId");
 });
 
-test("rejects invalid schema, input, code and oversized payload before execution", async () => {
+test("rejects extra providerId, invalid schema, input, code and oversized payload before execution", async () => {
   const app = await testApp();
-  const providerId = await providerIdFor(app);
   const send = (payload: Record<string, unknown>) =>
     app.inject({
       method: "POST",
       url: "/v1/actors/preview",
-      headers: { "x-facet-dev-user": "alice" },
+      headers: { "x-facet-dev-user": "alice-labs" },
       payload,
     });
-  const base = previewPayload(providerId);
+  const base = previewPayload();
+  expect(
+    (
+      await send({
+        ...base,
+        providerId: "00000000-0000-4000-8000-000000000001",
+      })
+    ).statusCode,
+  ).toBe(400);
   expect(
     (await send({ ...base, inputSchema: { type: "array" } })).statusCode,
   ).toBe(400);
@@ -135,12 +136,11 @@ test("rejects invalid schema, input, code and oversized payload before execution
 
 test("denies a preview after its durable quota is exhausted", async () => {
   const app = await testApp({ consumeQuota: async () => false });
-  const providerId = await providerIdFor(app);
   const response = await app.inject({
     method: "POST",
     url: "/v1/actors/preview",
-    headers: { "x-facet-dev-user": "alice" },
-    payload: previewPayload(providerId),
+    headers: { "x-facet-dev-user": "alice-labs" },
+    payload: previewPayload(),
   });
   expect(response.statusCode).toBe(429);
   expect(executorCalls).toHaveLength(0);
@@ -152,12 +152,11 @@ test("fails closed on executor failure or oversized output", async () => {
       throw new Error("Docker unavailable");
     },
   });
-  const providerId = await providerIdFor(app);
   const response = await app.inject({
     method: "POST",
     url: "/v1/actors/preview",
-    headers: { "x-facet-dev-user": "alice" },
-    payload: previewPayload(providerId),
+    headers: { "x-facet-dev-user": "alice-labs" },
+    payload: previewPayload(),
   });
   expect(response.statusCode).toBe(502);
   expect(response.body).not.toContain("Docker unavailable");

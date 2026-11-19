@@ -1,43 +1,67 @@
 import { randomUUID } from "node:crypto";
 
-import { Ajv2020 } from "ajv/dist/2020.js";
+import { Ajv } from "ajv";
+import { and, eq, sql } from "drizzle-orm";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import type { IdentityAuthenticator } from "../auth/types.js";
+import type { Database } from "../db/client.js";
+import { actorPreviewUsage } from "../db/schema.js";
 import { AppError } from "../errors.js";
-import { requireProviderPermission } from "../providers/provider-rbac.js";
 import type { ProviderStore } from "../providers/provider-types.js";
-import { computeActorImageDigest } from "./actor-agent-service.js";
+import {
+  computeActorImageDigest,
+  validateActorCode,
+  validateInputSchema,
+} from "./actor-agent-service.js";
+
+const ajv = new Ajv({ allErrors: true });
+const MAX_PREVIEW_REQUEST_BYTES = 16_384;
+const MAX_PREVIEW_OUTPUT_BYTES = 65_536;
+const DAILY_PREVIEW_QUOTA = 20;
 
 const previewSchema = z
   .object({
-    providerId: z.string().uuid(),
-    code: z.string().min(10).max(131_072),
+    code: z.string().min(1).max(16_384),
     inputSchema: z.record(z.string(), z.unknown()),
     input: z.record(z.string(), z.unknown()),
   })
   .strict();
 
-const MAX_INPUT_BYTES = 16 * 1024;
-const MAX_SCHEMA_BYTES = 16 * 1024;
-const MAX_RESPONSE_BYTES = 1024 * 1024;
-
 export interface PreviewExecutionRequest {
   runId: string;
   facetId: string;
-  facetVersionId: string;
-  facetType: "HOSTED_ACTOR";
+  facetType: "ACTOR";
   input: Record<string, unknown>;
   timeoutMs: number;
-  actorBundle: { code: string; imageDigest: string };
+  actorBundle: {
+    code: string;
+    entrypoint: "run";
+    imageDigest: string;
+  };
+}
+
+export interface PreviewExecutionResponse {
+  status: string;
+  result?: unknown;
+  dataset?: unknown[];
+  logs?: string[];
+  usage?: {
+    itemCount?: number;
+    durationMs?: number;
+    outputHash?: string;
+    runnerSignature?: string;
+  };
 }
 
 export interface ActorPreviewRouteDependencies {
   authenticator: IdentityAuthenticator;
   providers: ProviderStore;
-  consumeQuota(userId: string, now: Date): Promise<boolean>;
-  execute(request: PreviewExecutionRequest): Promise<unknown>;
+  consumeQuota: (userId: string, now: Date) => Promise<boolean>;
+  execute: (
+    request: PreviewExecutionRequest,
+  ) => Promise<PreviewExecutionResponse>;
 }
 
 async function authenticate(
@@ -53,95 +77,50 @@ async function authenticate(
     ...(first(request.headers["x-facet-dev-user"])
       ? { devUser: first(request.headers["x-facet-dev-user"]) }
       : {}),
+    ...(first(request.headers["x-facet-dev-username"])
+      ? { devUsername: first(request.headers["x-facet-dev-username"]) }
+      : {}),
+    ...(first(request.headers["x-facet-dev-email"])
+      ? { devEmail: first(request.headers["x-facet-dev-email"]) }
+      : {}),
+    ...(first(request.headers["x-facet-dev-display-name"])
+      ? { devDisplayName: first(request.headers["x-facet-dev-display-name"]) }
+      : {}),
   });
 }
 
-function validatePreview(
-  code: string,
-  schema: Record<string, unknown>,
-  input: Record<string, unknown>,
-) {
-  if (
-    Buffer.byteLength(code, "utf8") > 131_072 ||
-    Buffer.byteLength(JSON.stringify(schema), "utf8") > MAX_SCHEMA_BYTES ||
-    Buffer.byteLength(JSON.stringify(input), "utf8") > MAX_INPUT_BYTES
-  ) {
-    throw new AppError(
-      "PREVIEW_TOO_LARGE",
-      "Actor preview exceeds its size limit.",
-      413,
-    );
-  }
-  if (
-    !/(export\s+default\b|export\s+(?:async\s+)?function\s+run\b)/u.test(code)
-  ) {
-    throw new AppError(
-      "INPUT_INVALID",
-      "Actor code must export run(input).",
-      400,
-    );
-  }
-  if (schema.type !== "object") {
-    throw new AppError(
-      "INPUT_INVALID",
-      "Actor inputSchema must be an object schema.",
-      400,
-    );
-  }
-  try {
-    const validator = new Ajv2020({
-      strict: false,
-      validateFormats: false,
-    }).compile(schema);
-    if (validator(input)) return;
-  } catch {
-    // Use the same client-facing error for malformed schemas and invalid inputs.
-  }
-  throw new AppError(
-    "INPUT_INVALID",
-    "Actor preview input does not match inputSchema.",
-    400,
-  );
-}
+export class PostgresActorPreviewQuota {
+  constructor(private readonly db: Database["db"]) {}
 
-function validResponse(value: unknown): value is {
-  result: unknown;
-  dataset: Record<string, unknown>[];
-  logs: string[];
-  usage: {
-    itemCount: number;
-    durationMs: number;
-    outputHash?: string;
-    runnerSignature?: string;
-  };
-} {
-  if (!value || typeof value !== "object") return false;
-  const response = value as Record<string, unknown>;
-  if (
-    response.status !== "SUCCEEDED" ||
-    !("result" in response) ||
-    !Array.isArray(response.dataset) ||
-    !response.dataset.every(
-      (item) =>
-        item !== null && typeof item === "object" && !Array.isArray(item),
-    ) ||
-    !Array.isArray(response.logs) ||
-    !response.logs.every((item) => typeof item === "string") ||
-    !response.usage ||
-    typeof response.usage !== "object"
-  )
-    return false;
-  const usage = response.usage as Record<string, unknown>;
-  return (
-    Number.isSafeInteger(usage.itemCount) &&
-    usage.itemCount === response.dataset.length &&
-    Number.isSafeInteger(usage.durationMs) &&
-    (usage.durationMs as number) >= 0 &&
-    typeof usage.outputHash === "string" &&
-    /^sha256:[a-f0-9]{64}$/u.test(usage.outputHash) &&
-    typeof usage.runnerSignature === "string" &&
-    /^0x[a-fA-F0-9]+$/u.test(usage.runnerSignature)
-  );
+  async consume(userId: string, now: Date): Promise<boolean> {
+    const dayUtc = now.toISOString().slice(0, 10);
+    return this.db.transaction(async (transaction) => {
+      await transaction
+        .insert(actorPreviewUsage)
+        .values({
+          userId,
+          dayUtc,
+          count: 0,
+        })
+        .onConflictDoNothing();
+
+      const updated = await transaction
+        .update(actorPreviewUsage)
+        .set({
+          count: sql`${actorPreviewUsage.count} + 1`,
+        })
+        .where(
+          and(
+            eq(actorPreviewUsage.userId, userId),
+            eq(actorPreviewUsage.dayUtc, dayUtc),
+            sql`${actorPreviewUsage.count} < ${DAILY_PREVIEW_QUOTA}`,
+          ),
+        )
+        .returning({ count: actorPreviewUsage.count });
+
+      return updated.length > 0;
+    });
+  }
 }
 
 export async function registerActorPreviewRoutes(
@@ -149,59 +128,91 @@ export async function registerActorPreviewRoutes(
   dependencies: ActorPreviewRouteDependencies,
 ): Promise<void> {
   app.post("/v1/actors/preview", async (request) => {
-    const identity = await authenticate(request, dependencies.authenticator);
-    const command = previewSchema.parse(request.body);
-    const actor = await dependencies.providers.upsertUser(identity);
-    const provider = await dependencies.providers.getProvider(
-      command.providerId,
+    const payloadBytes = Buffer.byteLength(
+      JSON.stringify(request.body ?? {}),
+      "utf8",
     );
-    if (!provider || provider.status !== "active") {
-      throw new AppError("RESOURCE_NOT_FOUND", "Provider not found.", 404);
-    }
-    const role = await dependencies.providers.getMembershipRole(
-      command.providerId,
-      actor.id,
-    );
-    requireProviderPermission(role, "facet:write");
-    validatePreview(command.code, command.inputSchema, command.input);
-    if (!(await dependencies.consumeQuota(actor.id, new Date()))) {
+    if (payloadBytes > MAX_PREVIEW_REQUEST_BYTES) {
       throw new AppError(
-        "PREVIEW_QUOTA_EXCEEDED",
-        "Daily Actor preview limit reached.",
+        "PAYLOAD_TOO_LARGE",
+        "Actor preview request exceeds maximum allowed size.",
+        413,
+      );
+    }
+
+    const identity = await authenticate(request, dependencies.authenticator);
+    const actor = await dependencies.providers.upsertUser(identity);
+    if (actor.status !== "active") {
+      throw new AppError("FORBIDDEN", "User account is disabled.", 403);
+    }
+
+    const body = previewSchema.parse(request.body);
+    validateInputSchema(body.inputSchema);
+    validateActorCode(body.code);
+
+    let validate: ReturnType<typeof ajv.compile>;
+    try {
+      validate = ajv.compile(body.inputSchema);
+    } catch {
+      throw new AppError(
+        "VALIDATION_FAILED",
+        "Invalid Actor inputSchema.",
+        400,
+      );
+    }
+    if (!validate(body.input)) {
+      throw new AppError(
+        "VALIDATION_FAILED",
+        "Actor input failed inputSchema validation.",
+        400,
+      );
+    }
+
+    const allowed = await dependencies.consumeQuota(actor.id, new Date());
+    if (!allowed) {
+      throw new AppError(
+        "RATE_LIMIT_EXCEEDED",
+        "Daily Actor preview quota exceeded.",
         429,
       );
     }
-    const execution: PreviewExecutionRequest = {
-      runId: randomUUID(),
-      facetId: randomUUID(),
-      facetVersionId: randomUUID(),
-      facetType: "HOSTED_ACTOR",
-      input: command.input,
-      timeoutMs: 15_000,
-      actorBundle: {
-        code: command.code,
-        imageDigest: computeActorImageDigest(command.code),
-      },
-    };
+
+    const imageDigest = computeActorImageDigest(body.code);
+    let outcome: PreviewExecutionResponse;
     try {
-      const output = await dependencies.execute(execution);
-      if (
-        !validResponse(output) ||
-        Buffer.byteLength(JSON.stringify(output), "utf8") > MAX_RESPONSE_BYTES
-      )
-        throw new Error("Invalid executor output");
-      return {
-        result: output.result,
-        dataset: output.dataset,
-        logs: output.logs,
-        usage: output.usage,
-      };
-    } catch {
+      outcome = await dependencies.execute({
+        runId: randomUUID(),
+        facetId: randomUUID(),
+        facetType: "ACTOR",
+        input: body.input,
+        timeoutMs: 15_000,
+        actorBundle: {
+          code: body.code,
+          entrypoint: "run",
+          imageDigest,
+        },
+      });
+    } catch (error) {
+      if (error instanceof AppError && error.statusCode < 500) {
+        throw error;
+      }
+      throw new AppError("UPSTREAM_ERROR", "Actor preview failed.", 502);
+    }
+
+    if (outcome.status !== "SUCCEEDED") {
+      throw new AppError("UPSTREAM_ERROR", "Actor preview failed.", 502);
+    }
+    if (
+      Buffer.byteLength(JSON.stringify(outcome), "utf8") >
+      MAX_PREVIEW_OUTPUT_BYTES
+    ) {
       throw new AppError(
-        "PREVIEW_EXECUTION_FAILED",
-        "Actor preview failed in Docker.",
+        "UPSTREAM_ERROR",
+        "Actor preview output too large.",
         502,
       );
     }
+
+    return outcome;
   });
 }

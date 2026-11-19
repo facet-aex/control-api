@@ -1,19 +1,12 @@
-export type PricingModel = "PAY_PER_RUN" | "PAY_PER_RESULT";
+import type { FacetType, PricingModel } from "../identifiers.js";
 
-export const FUSD_ASSET_ADDRESS = "0xe7082a54a456dc4dfe0ceadcd0d0dce7d8ba176f";
-export const FUJI_CHAIN_ID = 43113 as const;
-export const DEFAULT_PAY_TO = "0x9265c1c87fC5fb3C72Dc68b4D3A005dE1E22C3cf";
-export const DEFAULT_ERC8004_REGISTRY =
-  "0x8004A818BFB912233c491871b3d84c89A494BD9e";
-export const ACTOR_RUNNER_IMAGE = "facet/node-actor-runner:1.0";
-export const ACTOR_RUNTIME_NAME = "nodejs22-alpine-v1";
+export type ActorPublishStatus =
+  "REGISTRATION_PENDING" | "PUBLISHED" | "FAILED";
 
-export interface CreateActorCommand {
-  id?: string | undefined;
-  providerId: string;
-  name: string;
-  slug: string;
-  displayVersion?: string | undefined;
+export interface PublishActorCommand {
+  facetName: string;
+  facetDisplayName: string;
+  version?: string | undefined;
   summary?: string | undefined;
   description: string;
   category: string;
@@ -27,47 +20,65 @@ export interface CreateActorCommand {
   registryTxHash?: string | undefined;
 }
 
-export interface PublishedActorRecord {
-  id: string;
-  versionId: string;
-  slug: string;
-  facetType: "HOSTED_ACTOR";
-  imageDigest: string;
-  registryVerified: boolean;
-  status: "PUBLISHED" | "REGISTRATION_PENDING";
-  visibility: "PUBLIC" | "PRIVATE";
-  publishedAt?: Date | undefined;
-}
-
-export interface CreateAgentFacetCommand {
-  id?: string | undefined;
-  providerId: string;
-  name: string;
-  slug: string;
+export interface PublishAgentFacetCommand {
+  facetName: string;
+  facetDisplayName: string;
+  version?: string | undefined;
   summary?: string | undefined;
   description: string;
   category: string;
   tags?: string[] | undefined;
+  inputSchema: Record<string, unknown>;
+  outputSchema?: Record<string, unknown> | undefined;
   erc8004TokenId: string;
   erc8004Registry?: string | undefined;
   taskKind: string;
-  code?: string | undefined;
-  inputSchema: Record<string, unknown>;
-  outputSchema?: Record<string, unknown> | undefined;
   pricingModel?: PricingModel | undefined;
   priceAtomic?: string | undefined;
   payTo?: string | undefined;
   registryTxHash?: string | undefined;
 }
 
+export interface PublishedActorRecord {
+  provider: string;
+  facetName: string;
+  facetDisplayName: string;
+  version: string;
+  facetType: "ACTOR";
+  imageDigest: string;
+  registryVerified: boolean;
+  status: ActorPublishStatus;
+  visibility: "PRIVATE" | "PUBLIC";
+  publishedAt?: Date;
+}
+
+export interface MyActorSummary {
+  provider: string;
+  facetName: string;
+  facetDisplayName: string;
+  version: string;
+  status: ActorPublishStatus;
+  registryTxHash: string | null;
+}
+
+export interface ActorPublishStatusRecord {
+  providerId: string;
+  provider: string;
+  facetName: string;
+  version: string;
+  status: ActorPublishStatus;
+  registryTxHash: string | null;
+  errorCode: string | null;
+}
+
 export interface PublishedAgentFacetRecord {
-  id: string;
-  versionId: string;
-  slug: string;
-  facetType: "AUTONOMOUS_AGENT";
+  provider: string;
+  facetName: string;
+  facetDisplayName: string;
+  version: string;
+  facetType: "AGENT";
   erc8004TokenId: string;
   erc8004Registry: string;
-  registryVerified: boolean;
   status: "PUBLISHED";
   visibility: "PUBLIC";
   publishedAt: Date;
@@ -77,62 +88,51 @@ export interface PublishedFacetRegistryContext {
   facetId: string;
   providerId: string;
   versionId: string;
-  facetType: "EXTERNAL_HTTP_API" | "HOSTED_ACTOR" | "AUTONOMOUS_AGENT";
+  facetType: FacetType;
   imageDigest: string | null;
   pricingModel: PricingModel;
   priceAtomic: string;
-  payTo: string;
+  payTo: string | null;
   erc8004TokenId: string | null;
 }
 
 export interface ActorAgentStore {
-  listMyActors(userId: string): Promise<
-    Array<{
-      id: string;
-      versionId: string;
-      fullName: string;
-      displayVersion: string;
-      status: "REGISTRATION_PENDING" | "REGISTRATION_FAILED" | "PUBLISHED";
-      registryTxHash: string | null;
-    }>
-  >;
-  getActorPublishStatus(facetId: string): Promise<
-    | {
-        providerId: string;
-        facetId: string;
-        versionId: string;
-        fullName?: string;
-        displayVersion?: string;
-        status: "REGISTRATION_PENDING" | "PUBLISHED" | "REGISTRATION_FAILED";
-        registryTxHash: string | null;
-        errorCode: string | null;
-      }
-    | undefined
-  >;
+  listMyActors(userId: string): Promise<MyActorSummary[]>;
+  getActorPublishStatus(
+    provider: string,
+    facetName: string,
+    version: string,
+  ): Promise<ActorPublishStatusRecord | undefined>;
   publishActor(input: {
     actorUserId: string;
-    command: CreateActorCommand;
+    providerUsername: string;
+    command: PublishActorCommand;
+    manifest: Record<string, unknown>;
+    contentHash: string;
     imageDigest: string;
-    codeSha256: string;
     payTo: string;
     registryVerified: boolean;
-    requestId: string;
     pending?: boolean;
     idempotencyKey?: string;
     requestFingerprint?: string;
-    publicBaseUrl?: string;
+    schemaUri?: string;
+    requestId: string;
   }): Promise<PublishedActorRecord>;
   publishAgentFacet(input: {
     actorUserId: string;
-    command: CreateAgentFacetCommand;
+    providerUsername: string;
+    command: PublishAgentFacetCommand;
+    manifest: Record<string, unknown>;
+    contentHash: string;
     erc8004Registry: string;
-    codeSha256: string;
     payTo: string;
     registryVerified: boolean;
     requestId: string;
   }): Promise<PublishedAgentFacetRecord>;
-  getPublishedRegistryContext(
-    facetId: string,
+  getPublishedRegistryContextByName(
+    provider: string,
+    facetName: string,
+    version: string,
   ): Promise<PublishedFacetRegistryContext | undefined>;
   markRegistryVerified(input: {
     actorUserId: string;

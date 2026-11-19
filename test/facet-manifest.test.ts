@@ -10,15 +10,16 @@ const identifiers = {
 };
 
 describe("buildFacetDraftManifest", () => {
-  it("builds a provider-private draft contract with immutable provenance", () => {
+  it("builds a v0.15.0 provider-owned API manifest with Option B fields", () => {
     const result = buildFacetDraftManifest({
       ...identifiers,
-      displayVersion: "0.1.0",
+      provider: "alice-labs",
+      version: "0.1.0",
       sourceOperationPointer: "#/paths/~1weather/get",
       selection: {
         operationCandidateId: "019a6d2f-7b14-7000-8000-000000000005",
-        slug: "weather-now",
-        name: "Weather now",
+        facetName: "weather-now",
+        facetDisplayName: "Weather now",
         summary: "Read current weather.",
         description: "Weather observations from the provider.",
         category: "weather",
@@ -77,11 +78,12 @@ describe("buildFacetDraftManifest", () => {
       schemaVersion: "facet.manifest/v1",
       facetId: identifiers.facetId,
       versionId: identifiers.versionId,
-      displayVersion: "0.1.0",
       providerId: identifiers.providerId,
-      type: "EXTERNAL_HTTP_API",
-      name: "Weather now",
-      slug: "weather-now",
+      provider: "alice-labs",
+      facetName: "weather-now",
+      facetDisplayName: "Weather now",
+      version: "0.1.0",
+      type: "API",
       summary: "Read current weather.",
       description: "Weather observations from the provider.",
       category: "weather",
@@ -132,12 +134,13 @@ describe("buildFacetDraftManifest", () => {
   it("produces the same content hash for semantically identical candidate key order", () => {
     const base = {
       ...identifiers,
-      displayVersion: "0.1.0",
+      provider: "alice-labs",
+      version: "0.1.0",
       sourceOperationPointer: "#/paths/~1weather/get",
       selection: {
         operationCandidateId: "019a6d2f-7b14-7000-8000-000000000005",
-        slug: "weather-now",
-        name: "Weather now",
+        facetName: "weather-now",
+        facetDisplayName: "Weather now",
         category: "weather",
         tags: ["weather"],
         sideEffectClass: "READ_ONLY" as const,

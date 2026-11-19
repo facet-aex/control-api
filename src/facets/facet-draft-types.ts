@@ -3,8 +3,9 @@ export type SideEffectClass =
 
 export interface FacetDraftSelection {
   operationCandidateId: string;
-  slug: string;
-  name: string;
+  facetName: string;
+  facetDisplayName: string;
+  version?: string | undefined;
   summary?: string | undefined;
   description?: string | undefined;
   category: string;
@@ -15,13 +16,15 @@ export interface FacetDraftSelection {
 export interface FacetDraftRecord {
   facetId: string;
   providerId: string;
-  slug: string;
+  provider: string;
+  facetName: string;
+  facetDisplayName: string;
   facetStatus: "draft";
   visibility: "private";
   facetRevision: number;
   createdAt: Date;
   facetVersionId: string;
-  displayVersion: string;
+  version: string;
   facetVersionStatus: "draft";
   sourceVersionId: string;
   sourceOperationPointer: string;
@@ -38,6 +41,7 @@ export interface FacetDraftStore {
   createDrafts(input: {
     actorUserId: string;
     providerId: string;
+    providerUsername: string;
     importJobId: string;
     selections: FacetDraftSelection[];
     requestId: string;

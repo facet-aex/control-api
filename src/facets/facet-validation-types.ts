@@ -19,8 +19,11 @@ export interface StoredWarningAcknowledgement {
 export interface FacetValidationContext {
   facetVersionId: string;
   providerId: string;
+  provider: string;
+  facetName: string;
+  version: string;
   status: "draft" | "valid" | "published" | "disabled";
-  version: number;
+  revision: number;
   manifest: unknown;
   endpointConfig: {
     authKind: "none" | "api_key_header" | "api_key_query" | "bearer";
@@ -32,8 +35,9 @@ export interface FacetValidationContext {
 
 export interface StoredFacetValidation {
   facetVersionId: string;
+  version: string;
   status: "draft" | "valid";
-  version: number;
+  revision: number;
   validation: {
     status: "invalid" | "valid";
     errors: FacetValidationIssue[];
@@ -43,14 +47,16 @@ export interface StoredFacetValidation {
 }
 
 export interface FacetValidationStore {
-  getContext(
-    facetVersionId: string,
+  getContextByName(
+    provider: string,
+    facetName: string,
+    version: string,
   ): Promise<FacetValidationContext | undefined>;
   saveValidation(input: {
     actorUserId: string;
     providerId: string;
     facetVersionId: string;
-    expectedVersion: number;
+    expectedRevision: number;
     status: "draft" | "valid";
     validation: StoredFacetValidation["validation"];
     warningAcknowledgements: StoredWarningAcknowledgement[];

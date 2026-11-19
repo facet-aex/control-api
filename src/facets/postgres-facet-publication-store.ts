@@ -1,7 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 
 import type { Database } from "../db/client.js";
-import { auditEvents, facetVersions, facets } from "../db/schema.js";
+import { auditEvents, facetVersions, facets, users } from "../db/schema.js";
 import { AppError } from "../errors.js";
 import { hashFacetManifest } from "./facet-manifest.js";
 import type {
@@ -30,8 +30,10 @@ function validationStatus(
 export class PostgresFacetPublicationStore implements FacetPublicationStore {
   constructor(private readonly db: Db) {}
 
-  async getContext(
-    facetVersionId: string,
+  async getContextByName(
+    provider: string,
+    facetName: string,
+    version: string,
   ): Promise<FacetPublicationContext | undefined> {
     const row = (
       await this.db
@@ -39,17 +41,28 @@ export class PostgresFacetPublicationStore implements FacetPublicationStore {
           facetId: facets.id,
           facetVersionId: facetVersions.id,
           providerId: facets.providerId,
-          displayVersion: facetVersions.displayVersion,
+          provider: users.username,
+          facetName: facets.facetName,
+          facetDisplayName: facets.facetDisplayName,
+          facetType: facets.type,
+          version: facetVersions.version,
           facetStatus: facets.status,
           facetVersionStatus: facetVersions.status,
-          version: facetVersions.version,
+          revision: facetVersions.revision,
           manifest: facetVersions.manifest,
           validationResult: facetVersions.validationResult,
           endpointConfigId: facetVersions.endpointConfigId,
         })
         .from(facetVersions)
         .innerJoin(facets, eq(facets.id, facetVersions.facetId))
-        .where(eq(facetVersions.id, facetVersionId))
+        .innerJoin(users, eq(users.id, facets.providerId))
+        .where(
+          and(
+            eq(users.username, provider),
+            eq(facets.facetName, facetName),
+            eq(facetVersions.version, version),
+          ),
+        )
         .limit(1)
     )[0];
     if (!row) return undefined;
@@ -57,10 +70,14 @@ export class PostgresFacetPublicationStore implements FacetPublicationStore {
       facetId: row.facetId,
       facetVersionId: row.facetVersionId,
       providerId: row.providerId,
-      displayVersion: row.displayVersion,
+      provider: row.provider,
+      facetName: row.facetName,
+      facetDisplayName: row.facetDisplayName,
+      facetType: row.facetType,
+      version: row.version,
       facetStatus: row.facetStatus,
       facetVersionStatus: row.facetVersionStatus,
-      version: row.version,
+      revision: row.revision,
       manifest: row.manifest as Record<string, unknown>,
       validationStatus: validationStatus(row.validationResult),
       endpointConfigured: row.endpointConfigId !== null,
@@ -73,19 +90,24 @@ export class PostgresFacetPublicationStore implements FacetPublicationStore {
         await transaction
           .select({
             facetId: facets.id,
-            facetRevision: facets.version,
+            facetName: facets.facetName,
+            facetDisplayName: facets.facetDisplayName,
+            facetType: facets.type,
+            facetRevision: facets.revision,
             providerId: facets.providerId,
+            provider: users.username,
             facetStatus: facets.status,
             facetVersionId: facetVersions.id,
             facetVersionStatus: facetVersions.status,
-            displayVersion: facetVersions.displayVersion,
             version: facetVersions.version,
+            revision: facetVersions.revision,
             manifest: facetVersions.manifest,
             validationResult: facetVersions.validationResult,
             endpointConfigId: facetVersions.endpointConfigId,
           })
           .from(facetVersions)
           .innerJoin(facets, eq(facets.id, facetVersions.facetId))
+          .innerJoin(users, eq(users.id, facets.providerId))
           .where(
             and(
               eq(facetVersions.id, input.facetVersionId),
@@ -96,7 +118,7 @@ export class PostgresFacetPublicationStore implements FacetPublicationStore {
           .limit(1)
       )[0];
       if (!current) return undefined;
-      if (current.version !== input.expectedVersion) {
+      if (current.revision !== input.expectedRevision) {
         throw new AppError(
           "VERSION_PRECONDITION_FAILED",
           "The Facet Version changed; reload it before publishing.",
@@ -131,19 +153,19 @@ export class PostgresFacetPublicationStore implements FacetPublicationStore {
             contentHash,
             publishedAt,
             publishedBy: input.actorUserId,
-            version: sql`${facetVersions.version} + 1`,
+            revision: sql`${facetVersions.revision} + 1`,
             updatedAt: publishedAt,
           })
           .where(
             and(
               eq(facetVersions.id, input.facetVersionId),
-              eq(facetVersions.version, input.expectedVersion),
+              eq(facetVersions.revision, input.expectedRevision),
               eq(facetVersions.status, "valid"),
             ),
           )
           .returning({
             id: facetVersions.id,
-            version: facetVersions.version,
+            revision: facetVersions.revision,
           })
       )[0];
       if (!publishedVersion) {
@@ -160,11 +182,11 @@ export class PostgresFacetPublicationStore implements FacetPublicationStore {
             status: "published",
             visibility: input.visibility,
             currentPublishedVersionId: input.facetVersionId,
-            version: sql`${facets.version} + 1`,
+            revision: sql`${facets.revision} + 1`,
             updatedAt: publishedAt,
           })
           .where(eq(facets.id, current.facetId))
-          .returning({ version: facets.version })
+          .returning({ revision: facets.revision })
       )[0];
       if (!publishedFacet) {
         throw new AppError("RESOURCE_NOT_FOUND", "Facet not found.", 404);
@@ -178,19 +200,24 @@ export class PostgresFacetPublicationStore implements FacetPublicationStore {
         requestId: input.requestId,
         metadata: {
           facetId: current.facetId,
+          provider: current.provider,
+          facetName: current.facetName,
+          version: current.version,
           visibility: input.visibility,
           contentHash,
         },
       });
       return {
-        facetId: current.facetId,
-        facetVersionId: publishedVersion.id,
-        displayVersion: current.displayVersion,
+        provider: current.provider,
+        facetName: current.facetName,
+        facetDisplayName: current.facetDisplayName,
+        facetType: current.facetType,
+        version: current.version,
         visibility: input.visibility,
         contentHash,
         publishedAt: publishedAt.toISOString(),
-        facetVersion: publishedVersion.version,
-        facetRevision: publishedFacet.version,
+        facetVersionRevision: publishedVersion.revision,
+        facetRevision: publishedFacet.revision,
       };
     });
   }

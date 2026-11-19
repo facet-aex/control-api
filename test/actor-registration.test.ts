@@ -4,6 +4,7 @@ import {
   ActorRegistrationWorker,
   type ActorRegistrationJob,
 } from "../src/facets/actor-registration-worker.js";
+import { uuidToFacetKey } from "../src/facets/fuji-registry-verifier.js";
 
 const job: ActorRegistrationJob = {
   facetId: "00000000-0000-4000-8000-000000000001",
@@ -12,13 +13,14 @@ const job: ActorRegistrationJob = {
   priceAtomic: "1000",
   payTo: "0x0000000000000000000000000000000000000001",
   schemaURI:
-    "https://facet.example/v1/catalog/facets/00000000-0000-4000-8000-000000000001",
+    "https://facet.example/v1/catalog/facets/alice-labs/weather-actor/versions/1.0.0",
   signedRaw: null,
   txHash: null,
 };
 
-test("persists the signed transaction before broadcast and retries the same bytes", async () => {
+test("uses versionId as the on-chain FacetActorRegistry key and persists signed tx for retries", async () => {
   const events: string[] = [];
+  const readKeys: string[] = [];
   const current = { ...job };
   let prepareCount = 0;
   let broadcastCount = 0;
@@ -38,8 +40,12 @@ test("persists the signed transaction before broadcast and retries the same byte
       },
     },
     {
-      readRegistration: async () => null,
-      prepare: async () => {
+      readRegistration: async (registryKeyId) => {
+        readKeys.push(registryKeyId);
+        return null;
+      },
+      prepare: async (preparedJob) => {
+        expect(preparedJob.versionId).toBe(job.versionId);
         prepareCount += 1;
         return { hash: `0x${"b".repeat(64)}`, raw: "0x1234" };
       },
@@ -57,6 +63,8 @@ test("persists the signed transaction before broadcast and retries the same byte
   expect(prepareCount).toBe(1);
   expect(broadcastCount).toBe(2);
   expect(events).toEqual(["saved", "broadcast", "broadcast"]);
+  expect(readKeys).toEqual([job.versionId, job.versionId]);
+  expect(uuidToFacetKey(job.versionId)).not.toBe(uuidToFacetKey(job.facetId));
 });
 
 test("promotes only a confirmed registration matching the immutable version", async () => {
@@ -84,7 +92,10 @@ test("promotes only a confirmed registration matching the immutable version", as
     },
   };
   const worker = new ActorRegistrationWorker(store, {
-    readRegistration: async () => observed,
+    readRegistration: async (registryKeyId) => {
+      expect(registryKeyId).toBe(job.versionId);
+      return observed;
+    },
     prepare: async () => {
       throw new Error("must not prepare twice");
     },

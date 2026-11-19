@@ -2,12 +2,34 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import type { IdentityAuthenticator } from "../auth/types.js";
+import {
+  isValidFacetName,
+  isValidSemver,
+  isValidUsername,
+} from "../identifiers.js";
 import type { FacetValidationService } from "./facet-validation-service.js";
 
-const idSchema = z.string().uuid();
+const paramsSchema = z.object({
+  provider: z
+    .string()
+    .refine(
+      isValidUsername,
+      "provider must be 8-16 character lowercase kebab-case.",
+    ),
+  facetName: z
+    .string()
+    .refine(
+      isValidFacetName,
+      "facetName must be 4-32 character lowercase kebab-case.",
+    ),
+  version: z
+    .string()
+    .refine(isValidSemver, "version must be strict SemVer MAJOR.MINOR.PATCH."),
+});
+
 const requestSchema = z
   .object({
-    version: z.number().int().positive(),
+    revision: z.number().int().positive(),
     warningAcknowledgements: z
       .array(
         z
@@ -59,16 +81,17 @@ export async function registerFacetValidationRoutes(
   app: FastifyInstance,
   dependencies: FacetValidationRouteDependencies,
 ): Promise<void> {
-  app.post("/v1/facet-versions/:versionId/validate", async (request) => {
-    const { versionId } = z
-      .object({ versionId: idSchema })
-      .parse(request.params);
-    const payload = requestSchema.parse(request.body);
-    const identity = await authenticate(request, dependencies.authenticator);
-    return dependencies.service.validate(
-      identity,
-      { facetVersionId: versionId, ...payload },
-      request.id,
-    );
-  });
+  app.post(
+    "/v1/facets/:provider/:facetName/versions/:version/validate",
+    async (request) => {
+      const params = paramsSchema.parse(request.params);
+      const payload = requestSchema.parse(request.body);
+      const identity = await authenticate(request, dependencies.authenticator);
+      return dependencies.service.validate(
+        identity,
+        { ...params, ...payload },
+        request.id,
+      );
+    },
+  );
 }

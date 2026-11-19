@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import type {
@@ -6,82 +5,106 @@ import type {
   PublicFacet,
 } from "../src/facets/public-catalog.js";
 
-const facet: PublicFacet = {
-  id: randomUUID(),
-  versionId: randomUUID(),
-  slug: "weather",
-  fullName: "example/weather",
-  name: "Weather",
+const facetV1: PublicFacet = {
+  provider: "example-co",
+  facetName: "weather-now",
+  facetDisplayName: "Weather Now",
+  version: "1.0.0",
+  facetType: "API",
   description: "Current weather",
   category: "Data",
-  tags: [],
-  facetType: "EXTERNAL_HTTP_API",
-  provider: { id: randomUUID(), name: "Example", slug: "example" },
-  displayVersion: "1.0.0",
+  tags: ["weather"],
   method: "GET",
-  inputSchema: {},
-  outputSchema: {},
-  publishedAt: new Date().toISOString(),
+  inputSchema: { type: "object" },
+  outputSchema: { type: "object" },
+  pricing: {
+    model: "PAY_PER_RUN",
+    priceAtomic: "1000",
+    assetAddress: "0xe7082a54a456dc4dfe0ceadcd0d0dce7d8ba176f",
+    chainId: 43113,
+    payTo: "0x9265c1c87fC5fb3C72Dc68b4D3A005dE1E22C3cf",
+  },
+  publishedAt: "2026-11-18T00:00:00.000Z",
 };
+
+const facetV2: PublicFacet = {
+  ...facetV1,
+  version: "1.0.1",
+  publishedAt: "2026-11-18T01:00:00.000Z",
+};
+
 const catalog: PublicCatalog = {
   async list(query, limit, filters) {
-    if (filters?.type && filters.type !== facet.facetType) return [];
-    return query === "Weather" && limit === 1 ? [facet] : [];
+    if (filters?.type && filters.type !== facetV2.facetType) return [];
+    return query === "Weather" && limit === 1 ? [facetV2] : [];
   },
-  async get(id) {
-    return id === facet.id ? facet : undefined;
-  },
-  async getByName(username, facetName) {
-    return `${username}/${facetName}` === facet.fullName ? facet : undefined;
+  async getByName(provider, facetName, version) {
+    if (provider !== "example-co" || facetName !== "weather-now") {
+      return undefined;
+    }
+    if (version === undefined || version === "1.0.1") return facetV2;
+    if (version === "1.0.0") return facetV1;
+    return undefined;
   },
 };
 
-describe("public catalog routes", () => {
-  it("lists and retrieves published facets without authentication", async () => {
+describe("public catalog Option B routes", () => {
+  it("lists and retrieves published facets by natural keys without leaking UUIDs or legacy names", async () => {
     const app = await buildApp({
       checkDatabase: async () => {},
       environment: "local",
       webOrigin: "http://localhost:3000",
       publicCatalog: catalog,
     });
+
     const list = await app.inject({
       method: "GET",
-      url: "/v1/catalog/facets?q=Weather&limit=1&type=EXTERNAL_HTTP_API",
+      url: "/v1/catalog/facets?q=Weather&limit=1&type=API",
     });
     expect(list.statusCode).toBe(200);
-    expect(list.json()).toEqual({ facets: [facet] });
-    const detail = await app.inject({
+    expect(list.json()).toEqual({ facets: [facetV2] });
+
+    const latestDetail = await app.inject({
       method: "GET",
-      url: `/v1/catalog/facets/${facet.id}`,
+      url: "/v1/catalog/facets/example-co/weather-now",
     });
-    expect(detail.json()).toEqual({ facet });
-    const namedDetail = await app.inject({
+    expect(latestDetail.statusCode).toBe(200);
+    expect(latestDetail.json()).toEqual({ facet: facetV2 });
+
+    const pinnedVersion = await app.inject({
       method: "GET",
-      url: "/v1/catalog/facets/example/weather",
+      url: "/v1/catalog/facets/example-co/weather-now/versions/1.0.0",
     });
-    expect(namedDetail.json()).toEqual({ facet });
-    expect(JSON.stringify(detail.json())).not.toMatch(
-      /protectedBaseUrl|secretRefId|vaultReference/iu,
+    expect(pinnedVersion.statusCode).toBe(200);
+    expect(pinnedVersion.json()).toEqual({ facet: facetV1 });
+
+    expect(JSON.stringify(latestDetail.json())).not.toMatch(
+      /protectedBaseUrl|secretRefId|vaultReference|facetId|versionId|fullName|displayVersion|creator/iu,
     );
     await app.close();
   });
 
-  it("bounds queries and returns 404 for missing facets", async () => {
+  it("rejects UUID lookup, invalid SemVer versions, and legacy facetType query values", async () => {
     const app = await buildApp({
       checkDatabase: async () => {},
       environment: "local",
       webOrigin: "http://localhost:3000",
       publicCatalog: catalog,
     });
-    expect(
-      (await app.inject({ method: "GET", url: "/v1/catalog/facets?limit=51" }))
-        .statusCode,
-    ).toBe(400);
+
     expect(
       (
         await app.inject({
           method: "GET",
-          url: "/v1/catalog/facets?type=INVALID_TYPE",
+          url: "/v1/catalog/facets/019a6d2f-7b14-7000-8000-000000000001",
+        })
+      ).statusCode,
+    ).toBe(404);
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: "/v1/catalog/facets?type=EXTERNAL_HTTP_API",
         })
       ).statusCode,
     ).toBe(400);
@@ -89,7 +112,15 @@ describe("public catalog routes", () => {
       (
         await app.inject({
           method: "GET",
-          url: `/v1/catalog/facets/${randomUUID()}`,
+          url: "/v1/catalog/facets/example-co/weather-now/versions/v1",
+        })
+      ).statusCode,
+    ).toBe(400);
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: "/v1/catalog/facets/example-co/missing-one",
         })
       ).statusCode,
     ).toBe(404);

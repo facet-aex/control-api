@@ -1,6 +1,5 @@
 import type { AuthenticatedIdentity } from "../auth/types.js";
 import { AppError } from "../errors.js";
-import { requireProviderPermission } from "../providers/provider-rbac.js";
 import type { ProviderStore } from "../providers/provider-types.js";
 import type {
   FacetValidationStore,
@@ -15,9 +14,9 @@ function toPublic(
 ) {
   return {
     facetVersion: {
-      id: saved.facetVersionId,
-      status: saved.status.toUpperCase() as "DRAFT" | "VALID",
       version: saved.version,
+      status: saved.status.toUpperCase() as "DRAFT" | "VALID",
+      revision: saved.revision,
       validation: {
         status: saved.validation.status.toUpperCase() as "INVALID" | "VALID",
         errors: saved.validation.errors,
@@ -37,8 +36,10 @@ export class FacetValidationService {
   async validate(
     identity: AuthenticatedIdentity,
     input: {
-      facetVersionId: string;
-      version: number;
+      provider: string;
+      facetName: string;
+      version: string;
+      revision: number;
       warningAcknowledgements: Array<{
         warningId: string;
         reason?: string | undefined;
@@ -46,16 +47,22 @@ export class FacetValidationService {
     },
     requestId: string,
   ) {
-    const context = await this.validations.getContext(input.facetVersionId);
-    if (!context) {
+    const actor = await this.providers.upsertUser(identity);
+    if (actor.username !== input.provider) {
+      throw new AppError(
+        "AUTHORIZATION_DENIED",
+        "The authenticated user is not authorized for this provider.",
+        403,
+      );
+    }
+    const context = await this.validations.getContextByName(
+      input.provider,
+      input.facetName,
+      input.version,
+    );
+    if (!context || context.providerId !== actor.id) {
       throw new AppError("RESOURCE_NOT_FOUND", "Facet version not found.", 404);
     }
-    const actor = await this.providers.upsertUser(identity);
-    const role = await this.providers.getMembershipRole(
-      context.providerId,
-      actor.id,
-    );
-    requireProviderPermission(role, "facet:write");
     if (context.status === "published" || context.status === "disabled") {
       throw new AppError(
         "RESOURCE_CONFLICT",
@@ -100,16 +107,16 @@ export class FacetValidationService {
               warningId: id,
               ...(current.reason ? { reason: current.reason } : {}),
               acknowledgedAt: now,
-              acknowledgedBy: actor.id,
+              acknowledgedBy: actor.username,
             }
           : previous!;
       });
 
     const saved = await this.validations.saveValidation({
       actorUserId: actor.id,
-      providerId: context.providerId,
-      facetVersionId: input.facetVersionId,
-      expectedVersion: input.version,
+      providerId: actor.id,
+      facetVersionId: context.facetVersionId,
+      expectedRevision: input.revision,
       status: isValid ? "valid" : "draft",
       validation: {
         status: isValid ? "valid" : "invalid",

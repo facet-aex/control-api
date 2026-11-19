@@ -3,7 +3,7 @@ import { relevance, searchTerms } from "../src/facets/public-catalog.js";
 
 describe("catalog intent search", () => {
   const facet = {
-    name: "Bitcoin historical price chart",
+    facetDisplayName: "Bitcoin historical price chart",
     description: "Returns the past month of BTC prices in USD",
     category: "market-data",
     tags: ["crypto", "price", "history"],

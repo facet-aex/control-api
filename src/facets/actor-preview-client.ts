@@ -1,4 +1,7 @@
-import type { PreviewExecutionRequest } from "./actor-preview.js";
+import type {
+  PreviewExecutionRequest,
+  PreviewExecutionResponse,
+} from "./actor-preview.js";
 
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 
@@ -6,7 +9,9 @@ export function createActorPreviewExecutor(baseUrl: string, token: string) {
   if (token.length < 32)
     throw new Error("FACET_EXECUTOR_TOKEN must have at least 32 characters");
   const url = new URL("/v1/execute", baseUrl).toString();
-  return async (request: PreviewExecutionRequest): Promise<unknown> => {
+  return async (
+    request: PreviewExecutionRequest,
+  ): Promise<PreviewExecutionResponse> => {
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -27,6 +32,6 @@ export function createActorPreviewExecutor(baseUrl: string, token: string) {
     if (Buffer.byteLength(body, "utf8") > MAX_RESPONSE_BYTES) {
       throw new Error("Executor response too large");
     }
-    return JSON.parse(body) as unknown;
+    return JSON.parse(body) as PreviewExecutionResponse;
   };
 }

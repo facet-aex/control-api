@@ -1,6 +1,5 @@
 import type { AuthenticatedIdentity } from "../auth/types.js";
 import { AppError } from "../errors.js";
-import { requireProviderPermission } from "../providers/provider-rbac.js";
 import type { ProviderStore } from "../providers/provider-types.js";
 import type {
   EndpointAuthKind,
@@ -35,19 +34,20 @@ function toInternalAuth(kind: PublicAuthKind): EndpointAuthKind {
 function toPublic(record: EndpointConfigRecord) {
   return {
     endpointConfig: {
-      id: record.id,
-      facetVersionId: record.facetVersionId,
-      facetVersionVersion: record.facetVersionVersion,
+      provider: record.provider,
+      facetName: record.facetName,
+      version: record.version,
+      facetVersionRevision: record.facetVersionRevision,
       baseUrlConfigured: true as const,
       method: record.method,
       pathTemplate: record.pathTemplate,
       authKind: record.authKind.toUpperCase() as PublicAuthKind,
-      secretRefId: record.secretRefId,
+      secretConfigured: record.secretRefId !== null,
       timeoutMs: record.timeoutMs,
       maxResponseBytes: record.maxResponseBytes,
       redirectPolicy: record.redirectPolicy.toUpperCase() as
         "DENY" | "SAME_ORIGIN",
-      version: record.version,
+      revision: record.revision,
       createdAt: record.createdAt.toISOString(),
       updatedAt: record.updatedAt.toISOString(),
     },
@@ -63,8 +63,10 @@ export class EndpointConfigService {
   async configure(
     identity: AuthenticatedIdentity,
     input: {
-      facetVersionId: string;
-      version: number;
+      provider: string;
+      facetName: string;
+      version: string;
+      revision: number;
       baseUrl: string;
       auth:
         | { kind: "NONE" }
@@ -80,16 +82,22 @@ export class EndpointConfigService {
     },
     requestId: string,
   ) {
-    const context = await this.endpoints.getContext(input.facetVersionId);
-    if (!context) {
+    const actor = await this.providers.upsertUser(identity);
+    if (actor.username !== input.provider) {
+      throw new AppError(
+        "AUTHORIZATION_DENIED",
+        "The authenticated user is not authorized for this provider.",
+        403,
+      );
+    }
+    const context = await this.endpoints.getContextByName(
+      input.provider,
+      input.facetName,
+      input.version,
+    );
+    if (!context || context.providerId !== actor.id) {
       throw new AppError("RESOURCE_NOT_FOUND", "Facet version not found.", 404);
     }
-    const actor = await this.providers.upsertUser(identity);
-    const role = await this.providers.getMembershipRole(
-      context.providerId,
-      actor.id,
-    );
-    requireProviderPermission(role, "facet:write");
     if (context.status !== "draft") {
       throw new AppError(
         "RESOURCE_CONFLICT",
@@ -100,9 +108,9 @@ export class EndpointConfigService {
 
     const record = await this.endpoints.configure({
       actorUserId: actor.id,
-      providerId: context.providerId,
-      facetVersionId: input.facetVersionId,
-      expectedVersion: input.version,
+      providerId: actor.id,
+      facetVersionId: context.facetVersionId,
+      expectedRevision: input.revision,
       baseUrl: normalizeBaseUrl(input.baseUrl),
       authKind: toInternalAuth(input.auth.kind),
       authTemplate:

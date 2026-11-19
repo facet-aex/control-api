@@ -1,34 +1,30 @@
 import { and, desc, eq } from "drizzle-orm";
 import type { Database } from "../db/client.js";
-import { facets, facetVersions, providers } from "../db/schema.js";
+import { facets, facetVersions, users } from "../db/schema.js";
+import type { FacetType, PricingModel } from "../identifiers.js";
 import {
-  ACTOR_RUNTIME_NAME,
+  AVALANCHE_FUJI_CHAIN_ID,
   DEFAULT_ERC8004_REGISTRY,
-  DEFAULT_PAY_TO,
-  FUJI_CHAIN_ID,
-  FUSD_ASSET_ADDRESS,
-  type PricingModel,
-} from "./actor-agent-types.js";
+  DEMO_LOCAL_PAY_TO,
+  FUSD_ADDRESS,
+} from "./actor-agent-service.js";
 
-export type FacetType =
-  "EXTERNAL_HTTP_API" | "HOSTED_ACTOR" | "AUTONOMOUS_AGENT";
+export type { FacetType, PricingModel };
 
 export interface PublicFacet {
-  id: string;
-  fullName?: string;
-  versionId: string;
-  slug: string;
-  name: string;
+  provider: string;
+  facetName: string;
+  facetDisplayName: string;
+  version: string;
+  facetType: FacetType;
+  summary?: string;
   description: string;
   category: string;
   tags: string[];
-  facetType?: FacetType;
-  provider: { id: string; name: string; slug: string };
-  displayVersion: string;
   method: string;
-  inputSchema: unknown;
-  outputSchema: unknown;
-  pricing?: {
+  inputSchema: Record<string, unknown>;
+  outputSchema: Record<string, unknown>;
+  pricing: {
     model: PricingModel;
     priceAtomic: string;
     assetAddress: string;
@@ -38,6 +34,7 @@ export interface PublicFacet {
   actorMeta?: {
     runtime: string;
     imageDigest: string;
+    runnerOciDigest?: string;
     registryTxHash?: string;
     registryVerified?: boolean;
   };
@@ -63,10 +60,10 @@ export interface PublicCatalog {
     limit: number,
     filters?: CatalogListFilters,
   ): Promise<PublicFacet[]>;
-  get(id: string): Promise<PublicFacet | undefined>;
   getByName(
-    username: string,
+    provider: string,
     facetName: string,
+    version?: string,
   ): Promise<PublicFacet | undefined>;
 }
 
@@ -127,43 +124,43 @@ export function searchTerms(query: string): string[] {
 }
 
 export function relevance(
-  facet: Pick<PublicFacet, "name" | "description" | "category" | "tags">,
+  facet: Pick<
+    PublicFacet,
+    "facetDisplayName" | "description" | "category" | "tags"
+  >,
   terms: string[],
 ): number {
   const haystack =
-    `${facet.name} ${facet.description} ${facet.category} ${facet.tags.join(" ")}`.toLowerCase();
+    `${facet.facetDisplayName} ${facet.description} ${facet.category} ${facet.tags.join(" ")}`.toLowerCase();
   return terms.reduce(
     (score, term) => score + (haystack.includes(term) ? 1 : 0),
     0,
   );
 }
 
-function toPublicFacetType(dbType: string): FacetType {
-  if (dbType === "hosted_actor") return "HOSTED_ACTOR";
-  if (dbType === "autonomous_agent") return "AUTONOMOUS_AGENT";
-  return "EXTERNAL_HTTP_API";
-}
-
-function toDbFacetType(
-  facetType: FacetType,
-): "external_http_api" | "hosted_actor" | "autonomous_agent" {
-  if (facetType === "HOSTED_ACTOR") return "hosted_actor";
-  if (facetType === "AUTONOMOUS_AGENT") return "autonomous_agent";
-  return "external_http_api";
-}
-
 export class PostgresPublicCatalog implements PublicCatalog {
-  constructor(private readonly db: Database["db"]) {}
+  constructor(
+    private readonly db: Database["db"],
+    private readonly runnerOciDigest?: string,
+  ) {}
 
-  private base() {
+  private baseLatest() {
     return this.db
-      .select({ facet: facets, version: facetVersions, provider: providers })
+      .select({ facet: facets, version: facetVersions, user: users })
       .from(facets)
       .innerJoin(
         facetVersions,
         eq(facets.currentPublishedVersionId, facetVersions.id),
       )
-      .innerJoin(providers, eq(facets.providerId, providers.id));
+      .innerJoin(users, eq(facets.providerId, users.id));
+  }
+
+  private baseByVersion() {
+    return this.db
+      .select({ facet: facets, version: facetVersions, user: users })
+      .from(facets)
+      .innerJoin(facetVersions, eq(facets.id, facetVersions.facetId))
+      .innerJoin(users, eq(facets.providerId, users.id));
   }
 
   private visible(filters?: CatalogListFilters) {
@@ -171,10 +168,10 @@ export class PostgresPublicCatalog implements PublicCatalog {
       eq(facets.status, "published"),
       eq(facets.visibility, "public"),
       eq(facetVersions.status, "published"),
-      eq(providers.status, "active"),
+      eq(users.status, "active"),
     ];
     if (filters?.type) {
-      conditions.push(eq(facets.type, toDbFacetType(filters.type)));
+      conditions.push(eq(facets.type, filters.type));
     }
     if (filters?.category) {
       conditions.push(eq(facets.category, filters.category));
@@ -184,51 +181,58 @@ export class PostgresPublicCatalog implements PublicCatalog {
 
   private map(
     row: Awaited<
-      ReturnType<ReturnType<PostgresPublicCatalog["base"]>["limit"]>
+      ReturnType<ReturnType<PostgresPublicCatalog["baseLatest"]>["limit"]>
     >[number],
   ): PublicFacet {
-    const operation = row.version.operation as { method?: string };
-    const mappedType = toPublicFacetType(row.facet.type);
+    const manifest = (row.version.manifest ?? {}) as {
+      operation?: {
+        method?: string;
+        inputSchema?: Record<string, unknown>;
+        outputSchema?: Record<string, unknown>;
+      };
+      actorConfig?: {
+        runtime?: string;
+      };
+      agentConfig?: {
+        taskKind?: string;
+      };
+    };
+    const mappedType: FacetType = row.facet.type;
     const pricingModel: PricingModel =
       row.version.pricingModel === "PAY_PER_RESULT"
         ? "PAY_PER_RESULT"
         : "PAY_PER_RUN";
     const payTo =
-      row.version.payTo ?? row.provider.walletAddress ?? DEFAULT_PAY_TO;
+      row.version.payTo ?? row.user.walletAddress ?? DEMO_LOCAL_PAY_TO;
 
     return {
-      id: row.facet.id,
-      fullName: `${row.provider.slug}/${row.facet.slug}`,
-      versionId: row.version.id,
-      slug: row.facet.slug,
-      name: row.facet.name,
+      provider: row.user.username,
+      facetName: row.facet.facetName,
+      facetDisplayName: row.facet.facetDisplayName,
+      version: row.version.version,
+      facetType: mappedType,
       description: row.facet.description,
       category: row.facet.category,
       tags: row.facet.tags,
-      facetType: mappedType,
-      provider: {
-        id: row.provider.id,
-        name: row.provider.name,
-        slug: row.provider.slug,
-      },
-      displayVersion: row.version.displayVersion,
       method:
-        operation.method ??
-        (mappedType === "EXTERNAL_HTTP_API" ? "GET" : "POST"),
-      inputSchema: row.version.inputSchema,
-      outputSchema: row.version.outputSchema,
+        manifest.operation?.method ?? (mappedType === "API" ? "GET" : "POST"),
+      inputSchema: manifest.operation?.inputSchema ?? { type: "object" },
+      outputSchema: manifest.operation?.outputSchema ?? { type: "object" },
       pricing: {
         model: pricingModel,
         priceAtomic: row.version.priceAtomic,
-        assetAddress: FUSD_ASSET_ADDRESS,
-        chainId: FUJI_CHAIN_ID,
+        assetAddress: FUSD_ADDRESS,
+        chainId: AVALANCHE_FUJI_CHAIN_ID,
         payTo,
       },
-      ...(mappedType === "HOSTED_ACTOR" && row.version.imageDigest
+      ...(mappedType === "ACTOR" && row.version.imageDigest
         ? {
             actorMeta: {
-              runtime: ACTOR_RUNTIME_NAME,
+              runtime: manifest.actorConfig?.runtime ?? "node-22-esm",
               imageDigest: row.version.imageDigest,
+              ...(this.runnerOciDigest
+                ? { runnerOciDigest: this.runnerOciDigest }
+                : {}),
               registryVerified: row.version.registryVerified,
               ...(row.version.registryTxHash
                 ? { registryTxHash: row.version.registryTxHash }
@@ -236,14 +240,14 @@ export class PostgresPublicCatalog implements PublicCatalog {
             },
           }
         : {}),
-      ...(mappedType === "AUTONOMOUS_AGENT" && row.version.erc8004TokenId
+      ...(mappedType === "AGENT" && row.version.erc8004TokenId
         ? {
             agentMeta: {
-              erc8004ChainId: FUJI_CHAIN_ID,
+              erc8004ChainId: AVALANCHE_FUJI_CHAIN_ID,
               erc8004Registry:
                 row.version.erc8004Registry ?? DEFAULT_ERC8004_REGISTRY,
               erc8004TokenId: row.version.erc8004TokenId,
-              taskKind: row.version.agentTaskKind ?? "a2a-task",
+              taskKind: manifest.agentConfig?.taskKind ?? "a2a-task",
               registryVerified: row.version.registryVerified,
               ...(row.version.registryTxHash
                 ? { registryTxHash: row.version.registryTxHash }
@@ -256,12 +260,12 @@ export class PostgresPublicCatalog implements PublicCatalog {
   }
 
   async list(
-    query: string,
-    limit: number,
+    query = "",
+    limit = 20,
     filters?: CatalogListFilters,
   ): Promise<PublicFacet[]> {
     const terms = searchTerms(query.trim());
-    const rows = await this.base()
+    const rows = await this.baseLatest()
       .where(this.visible(filters))
       .orderBy(desc(facetVersions.publishedAt), desc(facets.id))
       .limit(200);
@@ -275,23 +279,30 @@ export class PostgresPublicCatalog implements PublicCatalog {
       .map(({ facet }) => facet);
   }
 
-  async get(id: string): Promise<PublicFacet | undefined> {
-    const rows = await this.base()
-      .where(and(this.visible(), eq(facets.id, id)))
-      .limit(1);
-    return rows[0] ? this.map(rows[0]) : undefined;
-  }
-
   async getByName(
-    username: string,
+    provider: string,
     facetName: string,
+    version?: string,
   ): Promise<PublicFacet | undefined> {
-    const rows = await this.base()
+    if (version !== undefined) {
+      const rows = await this.baseByVersion()
+        .where(
+          and(
+            this.visible(),
+            eq(users.username, provider),
+            eq(facets.facetName, facetName),
+            eq(facetVersions.version, version),
+          ),
+        )
+        .limit(1);
+      return rows[0] ? this.map(rows[0]) : undefined;
+    }
+    const rows = await this.baseLatest()
       .where(
         and(
           this.visible(),
-          eq(providers.slug, username),
-          eq(facets.slug, facetName),
+          eq(users.username, provider),
+          eq(facets.facetName, facetName),
         ),
       )
       .limit(1);

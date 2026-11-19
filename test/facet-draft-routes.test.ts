@@ -46,8 +46,15 @@ class MemoryFacetDraftStore implements FacetDraftStore {
     input: Parameters<FacetDraftStore["createDrafts"]>[0],
   ): Promise<FacetDraftRecord[]> {
     const imported = this.imports.get(input.importJobId);
-    if (!imported || imported.providerId !== input.providerId) {
+    if (!imported) {
       throw new AppError("RESOURCE_NOT_FOUND", "Import job not found.", 404);
+    }
+    if (imported.providerId !== input.providerId) {
+      throw new AppError(
+        "AUTHORIZATION_DENIED",
+        "The authenticated user does not own this import job.",
+        403,
+      );
     }
     if (imported.status !== "ready") {
       throw new AppError(
@@ -70,19 +77,22 @@ class MemoryFacetDraftStore implements FacetDraftStore {
       }
       const facetId = randomUUID();
       const facetVersionId = randomUUID();
+      const version = selection.version ?? "0.1.0";
       const contentHash = `sha256:${createHash("sha256")
         .update(`${facetId}:${facetVersionId}:${candidate.jsonPointer}`)
         .digest("hex")}`;
       return {
         facetId,
         providerId: input.providerId,
-        slug: selection.slug,
+        provider: input.providerUsername,
+        facetName: selection.facetName,
+        facetDisplayName: selection.facetDisplayName,
         facetStatus: "draft" as const,
         visibility: "private" as const,
         facetRevision: 1,
         createdAt: new Date("2026-11-09T00:00:00.000Z"),
         facetVersionId,
-        displayVersion: "0.1.0",
+        version,
         facetVersionStatus: "draft" as const,
         sourceVersionId: imported.sourceVersionId,
         sourceOperationPointer: candidate.jsonPointer,
@@ -101,13 +111,13 @@ class MemoryFacetDraftStore implements FacetDraftStore {
         this.drafts.some(
           (existing) =>
             existing.providerId === draft.providerId &&
-            existing.slug === draft.slug,
+            existing.facetName === draft.facetName,
         ),
       )
     ) {
       throw new AppError(
         "RESOURCE_CONFLICT",
-        "A Facet with one of these slugs already exists.",
+        "A Facet with one of these facetNames already exists.",
         409,
       );
     }
@@ -117,10 +127,11 @@ class MemoryFacetDraftStore implements FacetDraftStore {
 }
 
 let app: FastifyInstance;
+let providers: InMemoryProviderStore;
 let store: MemoryFacetDraftStore;
 
 beforeEach(async () => {
-  const providers = new InMemoryProviderStore();
+  providers = new InMemoryProviderStore();
   store = new MemoryFacetDraftStore();
   const authenticator = new LocalAuthenticator();
   app = await buildApp({
@@ -140,21 +151,19 @@ beforeEach(async () => {
 
 afterEach(async () => app.close());
 
-async function createProvider(user = "alice"): Promise<string> {
-  const response = await app.inject({
-    method: "POST",
-    url: "/v1/providers",
-    headers: { "x-facet-dev-user": user },
-    payload: { slug: `${user}-facets`, name: `${user} Facets` },
+async function ensureUserId(username = "alice-labs"): Promise<string> {
+  const user = await providers.upsertUser({
+    subject: `local:${username}`,
+    username,
   });
-  return response.json().provider.id as string;
+  return user.id;
 }
 
 function selection(operationCandidateId: string, suffix: string) {
   return {
     operationCandidateId,
-    slug: `${suffix}-weather`,
-    name: `${suffix} weather`,
+    facetName: `${suffix}-weather`,
+    facetDisplayName: `${suffix} weather`,
     summary: `Read ${suffix} weather`,
     description: "Provider-owned weather data.",
     category: "weather",
@@ -163,17 +172,16 @@ function selection(operationCandidateId: string, suffix: string) {
   };
 }
 
-describe("Facet draft operation selection", () => {
-  it("creates one private Facet draft per selected operation atomically", async () => {
-    const providerId = await createProvider();
+describe("Facet draft operation selection (Option B)", () => {
+  it("creates one private API Facet draft per selected operation without exposing facetId or versionId", async () => {
+    const providerId = await ensureUserId("alice-labs");
     const imported = store.seedImport(providerId);
 
     const response = await app.inject({
       method: "POST",
       url: "/v1/facets",
-      headers: { "x-facet-dev-user": "alice" },
+      headers: { "x-facet-dev-user": "alice-labs" },
       payload: {
-        providerId,
         importJobId: imported.importJobId,
         selections: [
           selection(imported.candidates[0]!.id, "daily"),
@@ -183,53 +191,65 @@ describe("Facet draft operation selection", () => {
     });
 
     expect(response.statusCode).toBe(201);
-    expect(response.json()).toMatchObject({
+    const body = response.json();
+    expect(body).toEqual({
       facets: [
         {
-          providerId,
-          slug: "daily-weather",
-          type: "EXTERNAL_HTTP_API",
+          provider: "alice-labs",
+          facetName: "daily-weather",
+          facetDisplayName: "daily weather",
+          type: "API",
           status: "DRAFT",
           visibility: "PRIVATE",
-          version: 1,
+          revision: 1,
+          createdAt: "2026-11-09T00:00:00.000Z",
           draftVersion: {
-            displayVersion: "0.1.0",
+            version: "0.1.0",
             status: "DRAFT",
             sourceVersionId: imported.sourceVersionId,
             sourceOperationPointer: "#/paths/~1weather/get",
-            version: 1,
+            contentHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+            revision: 1,
             validation: { status: "PENDING", errors: [], warnings: [] },
           },
         },
         {
-          providerId,
-          slug: "severe-weather",
+          provider: "alice-labs",
+          facetName: "severe-weather",
+          facetDisplayName: "severe weather",
+          type: "API",
+          status: "DRAFT",
+          visibility: "PRIVATE",
+          revision: 1,
+          createdAt: "2026-11-09T00:00:00.000Z",
           draftVersion: {
+            version: "0.1.0",
+            status: "DRAFT",
+            sourceVersionId: imported.sourceVersionId,
             sourceOperationPointer: "#/paths/~1alerts/get",
+            contentHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+            revision: 1,
+            validation: { status: "PENDING", errors: [], warnings: [] },
           },
         },
       ],
     });
-    expect(response.json().facets[0].draftVersion.contentHash).toMatch(
-      /^sha256:[a-f0-9]{64}$/u,
-    );
     expect(store.drafts).toHaveLength(2);
     expect(response.body).not.toMatch(
-      /baseUrl|secretRef|credential|apiKey|bearerToken/iu,
+      /"(?:baseUrl|secretRef|credential|apiKey|bearerToken|providerId|displayVersion|facetId|versionId)"/iu,
     );
   });
 
-  it("rejects duplicate candidate IDs before creating any draft", async () => {
-    const providerId = await createProvider();
+  it("rejects duplicate candidate IDs and extra providerId fields", async () => {
+    const providerId = await ensureUserId("alice-labs");
     const imported = store.seedImport(providerId);
     const duplicate = imported.candidates[0]!.id;
 
-    const response = await app.inject({
+    const dupResp = await app.inject({
       method: "POST",
       url: "/v1/facets",
-      headers: { "x-facet-dev-user": "alice" },
+      headers: { "x-facet-dev-user": "alice-labs" },
       payload: {
-        providerId,
         importJobId: imported.importJobId,
         selections: [
           selection(duplicate, "first"),
@@ -237,23 +257,30 @@ describe("Facet draft operation selection", () => {
         ],
       },
     });
+    expect(dupResp.statusCode).toBe(400);
 
-    expect(response.statusCode).toBe(400);
-    expect(response.json()).toMatchObject({
-      error: { code: "INPUT_INVALID" },
+    const legacyResp = await app.inject({
+      method: "POST",
+      url: "/v1/facets",
+      headers: { "x-facet-dev-user": "alice-labs" },
+      payload: {
+        providerId,
+        importJobId: imported.importJobId,
+        selections: [selection(duplicate, "first")],
+      },
     });
+    expect(legacyResp.statusCode).toBe(400);
     expect(store.drafts).toHaveLength(0);
   });
 
   it("denies cross-provider selection and rejects an import that is not ready", async () => {
-    const providerId = await createProvider();
+    const providerId = await ensureUserId("alice-labs");
     const imported = store.seedImport(providerId);
     const denied = await app.inject({
       method: "POST",
       url: "/v1/facets",
-      headers: { "x-facet-dev-user": "mallory" },
+      headers: { "x-facet-dev-user": "mallory-x" },
       payload: {
-        providerId,
         importJobId: imported.importJobId,
         selections: [selection(imported.candidates[0]!.id, "denied")],
       },
@@ -264,9 +291,8 @@ describe("Facet draft operation selection", () => {
     const notReady = await app.inject({
       method: "POST",
       url: "/v1/facets",
-      headers: { "x-facet-dev-user": "alice" },
+      headers: { "x-facet-dev-user": "alice-labs" },
       payload: {
-        providerId,
         importJobId: queued.importJobId,
         selections: [selection(queued.candidates[0]!.id, "queued")],
       },

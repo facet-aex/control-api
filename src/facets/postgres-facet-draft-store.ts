@@ -44,12 +44,7 @@ export class PostgresFacetDraftStore implements FacetDraftStore {
               status: openApiImportJobs.status,
             })
             .from(openApiImportJobs)
-            .where(
-              and(
-                eq(openApiImportJobs.id, input.importJobId),
-                eq(openApiImportJobs.providerId, input.providerId),
-              ),
-            )
+            .where(eq(openApiImportJobs.id, input.importJobId))
             .limit(1)
         )[0];
         if (!job) {
@@ -57,6 +52,13 @@ export class PostgresFacetDraftStore implements FacetDraftStore {
             "RESOURCE_NOT_FOUND",
             "Import job not found.",
             404,
+          );
+        }
+        if (job.providerId !== input.providerId) {
+          throw new AppError(
+            "AUTHORIZATION_DENIED",
+            "The authenticated user does not own this import job.",
+            403,
           );
         }
         if (job.status !== "ready" || !job.sourceVersionId) {
@@ -94,8 +96,8 @@ export class PostgresFacetDraftStore implements FacetDraftStore {
           candidateRows.map((candidate) => [candidate.id, candidate]),
         );
 
-        const requestedSlugs = input.selections.map(
-          (selection) => selection.slug,
+        const requestedNames = input.selections.map(
+          (selection) => selection.facetName,
         );
         const existing = await transaction
           .select({ id: facets.id })
@@ -103,14 +105,14 @@ export class PostgresFacetDraftStore implements FacetDraftStore {
           .where(
             and(
               eq(facets.providerId, input.providerId),
-              inArray(facets.slug, requestedSlugs),
+              inArray(facets.facetName, requestedNames),
             ),
           )
           .limit(1);
         if (existing.length > 0) {
           throw new AppError(
             "RESOURCE_CONFLICT",
-            "A Facet with one of these slugs already exists.",
+            "A Facet with one of these facetNames already exists.",
             409,
           );
         }
@@ -152,12 +154,14 @@ export class PostgresFacetDraftStore implements FacetDraftStore {
             sql`select uuidv7()::text as facet_id, uuidv7()::text as version_id`,
           );
           const identifiers = requiredRow(generated.rows, "Facet identifiers");
+          const semver = selection.version ?? "0.1.0";
           const built = buildFacetDraftManifest({
             facetId: identifiers.facet_id,
             versionId: identifiers.version_id,
             providerId: input.providerId,
+            provider: input.providerUsername,
             sourceVersionId: job.sourceVersionId,
-            displayVersion: "0.1.0",
+            version: semver,
             sourceOperationPointer: candidateRow.jsonPointer,
             selection,
             candidate: candidate.data,
@@ -168,9 +172,9 @@ export class PostgresFacetDraftStore implements FacetDraftStore {
               .values({
                 id: identifiers.facet_id,
                 providerId: input.providerId,
-                type: "external_http_api",
-                slug: selection.slug,
-                name: selection.name,
+                type: "API",
+                facetName: selection.facetName,
+                facetDisplayName: selection.facetDisplayName,
                 description: selection.description ?? "",
                 category: selection.category,
                 tags: [...new Set(selection.tags)].sort(),
@@ -180,10 +184,11 @@ export class PostgresFacetDraftStore implements FacetDraftStore {
               .returning({
                 id: facets.id,
                 providerId: facets.providerId,
-                slug: facets.slug,
+                facetName: facets.facetName,
+                facetDisplayName: facets.facetDisplayName,
                 status: facets.status,
                 visibility: facets.visibility,
-                version: facets.version,
+                revision: facets.revision,
                 createdAt: facets.createdAt,
               }),
             "a Facet draft",
@@ -199,7 +204,7 @@ export class PostgresFacetDraftStore implements FacetDraftStore {
               .values({
                 id: identifiers.version_id,
                 facetId: createdFacet.id,
-                displayVersion: "0.1.0",
+                version: semver,
                 status: "draft",
                 sourceVersionId: job.sourceVersionId,
                 sourceOperationPointer: candidateRow.jsonPointer,
@@ -214,12 +219,12 @@ export class PostgresFacetDraftStore implements FacetDraftStore {
               })
               .returning({
                 id: facetVersions.id,
-                displayVersion: facetVersions.displayVersion,
+                version: facetVersions.version,
                 status: facetVersions.status,
                 sourceVersionId: facetVersions.sourceVersionId,
                 sourceOperationPointer: facetVersions.sourceOperationPointer,
                 contentHash: facetVersions.contentHash,
-                version: facetVersions.version,
+                revision: facetVersions.revision,
               }),
             "a Facet draft version",
           );
@@ -241,18 +246,20 @@ export class PostgresFacetDraftStore implements FacetDraftStore {
           records.push({
             facetId: createdFacet.id,
             providerId: createdFacet.providerId,
-            slug: createdFacet.slug,
+            provider: input.providerUsername,
+            facetName: createdFacet.facetName,
+            facetDisplayName: createdFacet.facetDisplayName,
             facetStatus: "draft",
             visibility: "private",
-            facetRevision: createdFacet.version,
+            facetRevision: createdFacet.revision,
             createdAt: createdFacet.createdAt,
             facetVersionId: createdVersion.id,
-            displayVersion: createdVersion.displayVersion,
+            version: createdVersion.version,
             facetVersionStatus: "draft",
             sourceVersionId: createdVersion.sourceVersionId,
             sourceOperationPointer: createdVersion.sourceOperationPointer,
             contentHash: createdVersion.contentHash,
-            facetVersionRevision: createdVersion.version,
+            facetVersionRevision: createdVersion.revision,
             validationResult,
           });
         }
@@ -263,7 +270,7 @@ export class PostgresFacetDraftStore implements FacetDraftStore {
       if (isUniqueViolation(error)) {
         throw new AppError(
           "RESOURCE_CONFLICT",
-          "A Facet with one of these slugs or versions already exists.",
+          "A Facet with one of these facetNames or versions already exists.",
           409,
         );
       }

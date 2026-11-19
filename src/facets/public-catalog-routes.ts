@@ -1,59 +1,105 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+
+import {
+  FACET_NAME_REGEX,
+  FACET_TYPES,
+  SEMVER_REGEX,
+  USERNAME_REGEX,
+} from "../identifiers.js";
 import type { PublicCatalog } from "./public-catalog.js";
 
-const listQuery = z.object({
-  q: z.string().trim().max(120).optional(),
-  type: z
-    .enum(["EXTERNAL_HTTP_API", "HOSTED_ACTOR", "AUTONOMOUS_AGENT"])
-    .optional(),
-  category: z.string().trim().min(1).max(80).optional(),
-  limit: z.coerce.number().int().min(1).max(50).default(20),
+const listQuerySchema = z.object({
+  q: z.string().max(120).optional(),
+  limit: z.coerce.number().int().min(1).max(50).optional(),
+  type: z.enum(FACET_TYPES).optional(),
 });
-const idParams = z.object({ facetId: z.string().uuid() });
-const nameParams = z.object({
-  username: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u),
-  facetName: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u),
-});
+
+const facetParamsSchema = z
+  .object({
+    provider: z.string().regex(USERNAME_REGEX),
+    facetName: z.string().regex(FACET_NAME_REGEX),
+  })
+  .strict();
+
+const facetVersionParamsSchema = z
+  .object({
+    provider: z.string().regex(USERNAME_REGEX),
+    facetName: z.string().regex(FACET_NAME_REGEX),
+    version: z.string().regex(SEMVER_REGEX),
+  })
+  .strict();
 
 export async function registerPublicCatalogRoutes(
   app: FastifyInstance,
   catalog: PublicCatalog,
 ): Promise<void> {
   app.get("/v1/catalog/facets", async (request) => {
-    const { q, type, category, limit } = listQuery.parse(request.query);
-    const filters =
-      type !== undefined || category !== undefined
-        ? { type, category }
-        : undefined;
+    const { q, limit, type } = listQuerySchema.parse(request.query);
     return {
-      facets: await catalog.list(q ?? "", limit, filters),
+      facets: await catalog.list(
+        q ?? "",
+        limit ?? 20,
+        type ? { type } : undefined,
+      ),
     };
   });
-  app.get("/v1/catalog/facets/:facetId", async (request, reply) => {
-    const { facetId } = idParams.parse(request.params);
-    const facet = await catalog.get(facetId);
-    return facet
-      ? { facet }
-      : reply.code(404).send({
+
+  app.get("/v1/catalog/facets/:provider/:facetName", async (request, reply) => {
+    const parsed = facetParamsSchema.safeParse(request.params);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: {
+          code: "VALIDATION_FAILED",
+          message: "Invalid provider or facetName.",
+          requestId: request.id,
+        },
+      });
+    }
+    const facet = await catalog.getByName(
+      parsed.data.provider,
+      parsed.data.facetName,
+    );
+    if (!facet) {
+      return reply.status(404).send({
+        error: {
+          code: "RESOURCE_NOT_FOUND",
+          message: "Facet not found.",
+          requestId: request.id,
+        },
+      });
+    }
+    return { facet };
+  });
+
+  app.get(
+    "/v1/catalog/facets/:provider/:facetName/versions/:version",
+    async (request, reply) => {
+      const parsed = facetVersionParamsSchema.safeParse(request.params);
+      if (!parsed.success) {
+        return reply.status(400).send({
           error: {
-            code: "NOT_FOUND",
-            message: "Facet not found.",
+            code: "VALIDATION_FAILED",
+            message: "Invalid provider, facetName, or version.",
             requestId: request.id,
           },
         });
-  });
-  app.get("/v1/catalog/facets/:username/:facetName", async (request, reply) => {
-    const { username, facetName } = nameParams.parse(request.params);
-    const facet = await catalog.getByName(username, facetName);
-    return facet
-      ? { facet }
-      : reply.code(404).send({
+      }
+      const facet = await catalog.getByName(
+        parsed.data.provider,
+        parsed.data.facetName,
+        parsed.data.version,
+      );
+      if (!facet) {
+        return reply.status(404).send({
           error: {
-            code: "NOT_FOUND",
-            message: "Facet not found.",
+            code: "RESOURCE_NOT_FOUND",
+            message: "Facet version not found.",
             requestId: request.id,
           },
         });
-  });
+      }
+      return { facet };
+    },
+  );
 }

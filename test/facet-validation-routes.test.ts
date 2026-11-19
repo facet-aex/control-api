@@ -15,19 +15,19 @@ import type {
 import { ProviderService } from "../src/providers/provider-service.js";
 import { InMemoryProviderStore } from "./in-memory-provider-store.js";
 
-function manifest() {
+function manifest(providerId: string, provider = "alice-labs") {
   const facetId = randomUUID();
   const versionId = randomUUID();
-  const providerId: string = randomUUID();
   return {
     schemaVersion: "facet.manifest/v1",
     facetId,
     versionId,
-    displayVersion: "0.1.0",
     providerId,
-    type: "EXTERNAL_HTTP_API",
-    name: "Weather",
-    slug: "weather",
+    provider,
+    facetName: "weather-now",
+    facetDisplayName: "Weather",
+    version: "0.1.0",
+    type: "API",
     summary: "Weather",
     description: "",
     category: "weather",
@@ -62,21 +62,33 @@ function manifest() {
 class MemoryFacetValidationStore implements FacetValidationStore {
   readonly contexts = new Map<string, FacetValidationContext>();
 
+  private key(provider: string, facetName: string, version: string) {
+    return `${provider}/${facetName}@${version}`;
+  }
+
   seed(
     providerId: string,
     options: {
+      provider?: string;
+      facetName?: string;
+      version?: string;
       endpointConfigured?: boolean;
       warnings?: Array<{ code: string; message: string }>;
     } = {},
   ) {
-    const value = manifest();
-    value.providerId = providerId;
+    const provider = options.provider ?? "alice-labs";
+    const value = manifest(providerId, provider);
+    if (options.facetName) value.facetName = options.facetName;
+    if (options.version) value.version = options.version;
     const id = value.versionId;
-    this.contexts.set(id, {
+    this.contexts.set(this.key(provider, value.facetName, value.version), {
       facetVersionId: id,
       providerId,
+      provider,
+      facetName: value.facetName,
+      version: value.version,
       status: "draft",
-      version: 1,
+      revision: 1,
       manifest: value,
       endpointConfig: options.endpointConfigured
         ? { authKind: "none", secretRefId: null }
@@ -87,16 +99,18 @@ class MemoryFacetValidationStore implements FacetValidationStore {
     return id;
   }
 
-  async getContext(facetVersionId: string) {
-    return this.contexts.get(facetVersionId);
+  async getContextByName(provider: string, facetName: string, version: string) {
+    return this.contexts.get(this.key(provider, facetName, version));
   }
 
   async saveValidation(
     input: Parameters<FacetValidationStore["saveValidation"]>[0],
   ) {
-    const current = this.contexts.get(input.facetVersionId);
+    const current = [...this.contexts.values()].find(
+      (item) => item.facetVersionId === input.facetVersionId,
+    );
     if (!current || current.providerId !== input.providerId) return undefined;
-    if (current.version !== input.expectedVersion) {
+    if (current.revision !== input.expectedRevision) {
       throw new AppError(
         "VERSION_PRECONDITION_FAILED",
         "Version conflict.",
@@ -105,17 +119,21 @@ class MemoryFacetValidationStore implements FacetValidationStore {
     }
     const saved: StoredFacetValidation = {
       facetVersionId: current.facetVersionId,
+      version: current.version,
       status: input.status,
-      version: current.version + 1,
+      revision: current.revision + 1,
       validation: input.validation,
       warningAcknowledgements: input.warningAcknowledgements,
     };
-    this.contexts.set(current.facetVersionId, {
-      ...current,
-      status: input.status,
-      version: saved.version,
-      warningAcknowledgements: input.warningAcknowledgements,
-    });
+    this.contexts.set(
+      this.key(current.provider, current.facetName, current.version),
+      {
+        ...current,
+        status: input.status,
+        revision: saved.revision,
+        warningAcknowledgements: input.warningAcknowledgements,
+      },
+    );
     return saved;
   }
 }
@@ -145,45 +163,43 @@ beforeEach(async () => {
 
 afterEach(async () => app.close());
 
-async function createProvider(user = "alice"): Promise<string> {
-  const response = await app.inject({
-    method: "POST",
-    url: "/v1/providers",
-    headers: { "x-facet-dev-user": user },
-    payload: { slug: `${user}-validation`, name: `${user} Validation` },
+async function ensureUserId(username = "alice-labs"): Promise<string> {
+  const user = await providers.upsertUser({
+    subject: `local:${username}`,
+    username,
   });
-  return response.json().provider.id as string;
+  return user.id;
 }
 
 async function validate(
-  versionId: string,
-  version: number,
+  facetName: string,
+  revision: number,
   warningIds: string[] = [],
 ) {
   return app.inject({
     method: "POST",
-    url: `/v1/facet-versions/${versionId}/validate`,
-    headers: { "x-facet-dev-user": "alice" },
+    url: `/v1/facets/alice-labs/${facetName}/versions/0.1.0/validate`,
+    headers: { "x-facet-dev-user": "alice-labs" },
     payload: {
-      version,
+      revision,
       warningAcknowledgements: warningIds.map((warningId) => ({ warningId })),
     },
   });
 }
 
-describe("Facet draft validation", () => {
+describe("Facet draft validation (Option B)", () => {
   it("keeps a draft invalid until private endpoint configuration exists", async () => {
-    const providerId = await createProvider();
-    const versionId = validations.seed(providerId);
+    const providerId = await ensureUserId("alice-labs");
+    validations.seed(providerId);
 
-    const response = await validate(versionId, 1);
+    const response = await validate("weather-now", 1);
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
       facetVersion: {
-        id: versionId,
+        version: "0.1.0",
         status: "DRAFT",
-        version: 2,
+        revision: 2,
         validation: {
           status: "INVALID",
           errors: [
@@ -192,11 +208,12 @@ describe("Facet draft validation", () => {
         },
       },
     });
+    expect(response.body).not.toContain('"id"');
   });
 
   it("requires exact warning acknowledgement before becoming valid", async () => {
-    const providerId = await createProvider();
-    const versionId = validations.seed(providerId, {
+    const providerId = await ensureUserId("alice-labs");
+    validations.seed(providerId, {
       endpointConfigured: true,
       warnings: [
         {
@@ -206,7 +223,7 @@ describe("Facet draft validation", () => {
       ],
     });
 
-    const first = await validate(versionId, 1);
+    const first = await validate("weather-now", 1);
     expect(first.statusCode).toBe(200);
     expect(first.json().facetVersion).toMatchObject({
       status: "DRAFT",
@@ -225,34 +242,33 @@ describe("Facet draft validation", () => {
       .warningId as string;
     expect(warningId).toMatch(/^sha256:[a-f0-9]{64}$/u);
 
-    const accepted = await validate(versionId, 2, [warningId]);
+    const accepted = await validate("weather-now", 2, [warningId]);
     expect(accepted.statusCode).toBe(200);
     expect(accepted.json().facetVersion).toMatchObject({
+      version: "0.1.0",
       status: "VALID",
-      version: 3,
+      revision: 3,
       validation: {
         status: "VALID",
         errors: [],
         warnings: [{ warningId, acknowledged: true }],
       },
-      warningAcknowledgements: [
-        { warningId, acknowledgedBy: expect.any(String) },
-      ],
+      warningAcknowledgements: [{ warningId, acknowledgedBy: "alice-labs" }],
     });
   });
 
   it("reports invalid candidate schemas safely and rejects unknown acknowledgements", async () => {
-    const providerId = await createProvider();
-    const versionId = validations.seed(providerId, {
+    const providerId = await ensureUserId("alice-labs");
+    validations.seed(providerId, {
       endpointConfigured: true,
     });
-    const context = validations.contexts.get(versionId)!;
+    const context = validations.contexts.get("alice-labs/weather-now@0.1.0")!;
     (context.manifest as ReturnType<typeof manifest>).operation.outputSchema = {
       type: "not-a-json-schema-type",
       secretExample: "must-not-echo",
     };
 
-    const invalid = await validate(versionId, 1);
+    const invalid = await validate("weather-now", 1);
     expect(invalid.statusCode).toBe(200);
     expect(invalid.json().facetVersion.validation.errors).toEqual(
       expect.arrayContaining([
@@ -261,21 +277,23 @@ describe("Facet draft validation", () => {
     );
     expect(invalid.body).not.toContain("must-not-echo");
 
-    const unknown = await validate(versionId, 2, [`sha256:${"a".repeat(64)}`]);
+    const unknown = await validate("weather-now", 2, [
+      `sha256:${"a".repeat(64)}`,
+    ]);
     expect(unknown.statusCode).toBe(400);
     expect(unknown.json()).toMatchObject({ error: { code: "INPUT_INVALID" } });
   });
 
   it("denies cross-provider validation", async () => {
-    const providerId = await createProvider();
-    const versionId = validations.seed(providerId, {
+    const providerId = await ensureUserId("alice-labs");
+    validations.seed(providerId, {
       endpointConfigured: true,
     });
     const response = await app.inject({
       method: "POST",
-      url: `/v1/facet-versions/${versionId}/validate`,
-      headers: { "x-facet-dev-user": "mallory" },
-      payload: { version: 1, warningAcknowledgements: [] },
+      url: "/v1/facets/alice-labs/weather-now/versions/0.1.0/validate",
+      headers: { "x-facet-dev-user": "mallory-x" },
+      payload: { revision: 1, warningAcknowledgements: [] },
     });
     expect(response.statusCode).toBe(403);
   });

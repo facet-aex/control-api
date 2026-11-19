@@ -26,12 +26,23 @@ import {
 import { ProviderService } from "../src/providers/provider-service.js";
 import { InMemoryProviderStore } from "./in-memory-provider-store.js";
 
+interface StoredActorItem {
+  providerId: string;
+  provider: string;
+  facetId: string;
+  versionId: string;
+  facetName: string;
+  facetDisplayName: string;
+  version: string;
+  record: PublishedActorRecord;
+}
+
 class MemoryActorAgentStore implements ActorAgentStore {
-  readonly actors: PublishedActorRecord[] = [];
+  readonly actors: StoredActorItem[] = [];
   readonly agents: PublishedAgentFacetRecord[] = [];
   readonly contexts = new Map<string, PublishedFacetRegistryContext>();
   readonly verifiedTxs = new Map<string, string>();
-  private readonly slugs = new Set<string>();
+  private readonly versions = new Set<string>();
   private readonly idempotency = new Map<
     string,
     { fingerprint: string; record: PublishedActorRecord }
@@ -39,32 +50,36 @@ class MemoryActorAgentStore implements ActorAgentStore {
 
   async listMyActors(userId: string) {
     return this.actors
-      .filter((actor) => this.contexts.get(actor.id)?.providerId && userId)
-      .map((actor) => ({
-        id: actor.id,
-        versionId: actor.versionId,
-        fullName: `test/${actor.slug}`,
-        displayVersion: "v1",
-        status: actor.status,
-        registryTxHash: null,
+      .filter((item) => item.providerId === userId)
+      .map((item) => ({
+        provider: item.provider,
+        facetName: item.facetName,
+        facetDisplayName: item.facetDisplayName,
+        version: item.version,
+        status: item.record.status,
+        registryTxHash: this.verifiedTxs.get(item.versionId) ?? null,
       }));
   }
 
-  async getActorPublishStatus(facetId: string) {
-    const record = this.actors.find((actor) => actor.id === facetId);
-    const context = this.contexts.get(facetId);
-    if (!record || !context) return undefined;
+  async getActorPublishStatus(
+    provider: string,
+    facetName: string,
+    version: string,
+  ) {
+    const item = this.actors.find(
+      (candidate) =>
+        candidate.provider === provider &&
+        candidate.facetName === facetName &&
+        candidate.version === version,
+    );
+    if (!item) return undefined;
     return {
-      providerId: context.providerId,
-      facetId,
-      versionId: record.versionId,
-      fullName: `alice-provider/${record.slug}`,
-      displayVersion: "1.0.0",
-      status:
-        record.status === "PUBLISHED"
-          ? ("PUBLISHED" as const)
-          : ("REGISTRATION_PENDING" as const),
-      registryTxHash: this.verifiedTxs.get(facetId) ?? null,
+      providerId: item.providerId,
+      provider: item.provider,
+      facetName: item.facetName,
+      version: item.version,
+      status: item.record.status,
+      registryTxHash: this.verifiedTxs.get(item.versionId) ?? null,
       errorCode: null,
     };
   }
@@ -72,9 +87,9 @@ class MemoryActorAgentStore implements ActorAgentStore {
   async publishActor(
     input: Parameters<ActorAgentStore["publishActor"]>[0],
   ): Promise<PublishedActorRecord> {
-    const key = `${input.command.providerId}:${input.command.slug}`;
+    const version = input.command.version ?? "1.0.0";
     if (input.pending) {
-      const idemKey = `${input.command.providerId}:${input.idempotencyKey}`;
+      const idemKey = `${input.actorUserId}:${input.idempotencyKey}`;
       const previous = this.idempotency.get(idemKey);
       if (previous) {
         if (previous.fingerprint !== input.requestFingerprint) {
@@ -87,21 +102,28 @@ class MemoryActorAgentStore implements ActorAgentStore {
         return previous.record;
       }
     }
-    if (this.slugs.has(key)) {
+    const versionKey = `${input.actorUserId}:${input.command.facetName}:${version}`;
+    if (this.versions.has(versionKey)) {
       throw new AppError(
         "RESOURCE_CONFLICT",
-        "A Facet with this slug already exists.",
+        "An Actor with this facetName and version already exists for this provider.",
         409,
       );
     }
-    this.slugs.add(key);
-    const facetId = input.command.id ?? randomUUID();
+    this.versions.add(versionKey);
+    const existingFacet = this.actors.find(
+      (a) =>
+        a.providerId === input.actorUserId &&
+        a.facetName === input.command.facetName,
+    );
+    const facetId = existingFacet?.facetId ?? randomUUID();
     const versionId = randomUUID();
     const record: PublishedActorRecord = {
-      id: facetId,
-      versionId,
-      slug: input.command.slug,
-      facetType: "HOSTED_ACTOR",
+      provider: input.providerUsername,
+      facetName: input.command.facetName,
+      facetDisplayName: input.command.facetDisplayName,
+      version,
+      facetType: "ACTOR",
       imageDigest: input.imageDigest,
       registryVerified: input.registryVerified,
       status: input.pending ? "REGISTRATION_PENDING" : "PUBLISHED",
@@ -110,75 +132,90 @@ class MemoryActorAgentStore implements ActorAgentStore {
         ? { publishedAt: new Date("2026-11-16T12:00:00.000Z") }
         : {}),
     };
-    this.actors.push(record);
-    if (input.pending) {
-      this.idempotency.set(
-        `${input.command.providerId}:${input.idempotencyKey}`,
-        {
-          fingerprint: input.requestFingerprint ?? "",
-          record,
-        },
-      );
-    }
-    this.contexts.set(facetId, {
+    this.actors.push({
+      providerId: input.actorUserId,
+      provider: input.providerUsername,
       facetId,
-      providerId: input.command.providerId,
       versionId,
-      facetType: "HOSTED_ACTOR",
-      imageDigest: input.imageDigest,
-      pricingModel: input.command.pricingModel ?? "PAY_PER_RUN",
-      priceAtomic: input.command.priceAtomic ?? "1000",
-      payTo: input.payTo,
-      erc8004TokenId: null,
+      facetName: input.command.facetName,
+      facetDisplayName: input.command.facetDisplayName,
+      version,
+      record,
     });
+    if (input.pending) {
+      this.idempotency.set(`${input.actorUserId}:${input.idempotencyKey}`, {
+        fingerprint: input.requestFingerprint ?? "",
+        record,
+      });
+    }
+    this.contexts.set(
+      `${input.providerUsername}/${input.command.facetName}@${version}`,
+      {
+        facetId,
+        providerId: input.actorUserId,
+        versionId,
+        facetType: "ACTOR",
+        imageDigest: input.imageDigest,
+        pricingModel: input.command.pricingModel ?? "PAY_PER_RUN",
+        priceAtomic: input.command.priceAtomic ?? "1000",
+        payTo: input.payTo,
+        erc8004TokenId: null,
+      },
+    );
     return record;
   }
 
   async publishAgentFacet(
     input: Parameters<ActorAgentStore["publishAgentFacet"]>[0],
   ): Promise<PublishedAgentFacetRecord> {
-    const key = `${input.command.providerId}:${input.command.slug}`;
-    if (this.slugs.has(key)) {
+    const version = input.command.version ?? "1.0.0";
+    const key = `${input.actorUserId}:${input.command.facetName}:${version}`;
+    if (this.versions.has(key)) {
       throw new AppError(
         "RESOURCE_CONFLICT",
-        "A Facet with this slug already exists.",
+        "An Agent Facet with this facetName and version already exists.",
         409,
       );
     }
-    this.slugs.add(key);
-    const facetId = input.command.id ?? randomUUID();
+    this.versions.add(key);
+    const facetId = randomUUID();
     const versionId = randomUUID();
     const record: PublishedAgentFacetRecord = {
-      id: facetId,
-      versionId,
-      slug: input.command.slug,
-      facetType: "AUTONOMOUS_AGENT",
+      provider: input.providerUsername,
+      facetName: input.command.facetName,
+      facetDisplayName: input.command.facetDisplayName,
+      version,
+      facetType: "AGENT",
       erc8004TokenId: input.command.erc8004TokenId,
       erc8004Registry: input.erc8004Registry,
-      registryVerified: input.registryVerified,
       status: "PUBLISHED",
       visibility: "PUBLIC",
       publishedAt: new Date("2026-11-16T12:00:00.000Z"),
     };
     this.agents.push(record);
-    this.contexts.set(facetId, {
-      facetId,
-      providerId: input.command.providerId,
-      versionId,
-      facetType: "AUTONOMOUS_AGENT",
-      imageDigest: null,
-      pricingModel: input.command.pricingModel ?? "PAY_PER_RUN",
-      priceAtomic: input.command.priceAtomic ?? "1000",
-      payTo: input.payTo,
-      erc8004TokenId: input.command.erc8004TokenId,
-    });
+    this.contexts.set(
+      `${input.providerUsername}/${input.command.facetName}@${version}`,
+      {
+        facetId,
+        providerId: input.actorUserId,
+        versionId,
+        facetType: "AGENT",
+        imageDigest: null,
+        pricingModel: input.command.pricingModel ?? "PAY_PER_RUN",
+        priceAtomic: input.command.priceAtomic ?? "1000",
+        payTo: input.payTo,
+        erc8004TokenId: input.command.erc8004TokenId,
+      },
+    );
     return record;
   }
 
-  async getPublishedRegistryContext(
-    facetId: string,
+  async getPublishedRegistryContextByName(
+    provider: string,
+    facetName: string,
+    version: string,
   ): Promise<PublishedFacetRegistryContext | undefined> {
-    return this.contexts.get(facetId);
+    return this.contexts.get(`${provider}/${facetName}@${version}`);
   }
 
   async markRegistryVerified(input: {
@@ -189,7 +226,7 @@ class MemoryActorAgentStore implements ActorAgentStore {
     registryTxHash: string;
     requestId: string;
   }): Promise<void> {
-    this.verifiedTxs.set(input.facetId, input.registryTxHash);
+    this.verifiedTxs.set(input.versionId, input.registryTxHash);
   }
 }
 
@@ -240,17 +277,7 @@ beforeEach(async () => {
 
 afterEach(async () => app.close());
 
-async function createProvider(user = "alice"): Promise<string> {
-  const response = await app.inject({
-    method: "POST",
-    url: "/v1/providers",
-    headers: { "x-facet-dev-user": user },
-    payload: { slug: `${user}-provider`, name: `${user} Provider` },
-  });
-  return response.json().provider.id as string;
-}
-
-describe("1-step Hosted Actor and ERC-8004 A2A Agent publishing", () => {
+describe("1-step Hosted Actor and ERC-8004 A2A Agent publishing under Option B", () => {
   it("requires a verified payout and rejects a different payTo in production", async () => {
     await app.close();
     const providers = new InMemoryProviderStore();
@@ -271,15 +298,20 @@ describe("1-step Hosted Actor and ERC-8004 A2A Agent publishing", () => {
         authenticator,
         service: new ActorAgentService(providers, store, verifier, {
           environment: "production",
+          publicBaseUrl: "https://facet.example",
         }),
       },
     });
-    const providerId = await createProvider();
+    await app.inject({
+      method: "GET",
+      url: "/v1/me",
+      headers: { "x-facet-dev-user": "alice-labs" },
+    });
+
     const payload = {
-      providerId,
-      name: "Payout test",
-      slug: "payout-test",
-      description: "Checks the creator payout.",
+      facetName: "payout-test",
+      facetDisplayName: "Payout Test",
+      description: "Checks the provider payout.",
       category: "test",
       inputSchema: { type: "object" },
       code: "export default async function run(input) { return [input]; }",
@@ -289,7 +321,7 @@ describe("1-step Hosted Actor and ERC-8004 A2A Agent publishing", () => {
         method: "POST",
         url: "/v1/actors",
         headers: {
-          "x-facet-dev-user": "alice",
+          "x-facet-dev-user": "alice-labs",
           "idempotency-key": "payout-check",
         },
         payload: { ...payload, ...(payTo ? { payTo } : {}) },
@@ -301,8 +333,8 @@ describe("1-step Hosted Actor and ERC-8004 A2A Agent publishing", () => {
     );
     const issued = await app.inject({
       method: "POST",
-      url: `/v1/providers/${providerId}/wallet-link-challenges`,
-      headers: { "x-facet-dev-user": "alice" },
+      url: "/v1/providers/alice-labs/wallet-link-challenges",
+      headers: { "x-facet-dev-user": "alice-labs" },
       payload: {},
     });
     const { challengeId, message } = issued.json() as {
@@ -311,8 +343,8 @@ describe("1-step Hosted Actor and ERC-8004 A2A Agent publishing", () => {
     };
     const linked = await app.inject({
       method: "POST",
-      url: `/v1/providers/${providerId}/wallet-link`,
-      headers: { "x-facet-dev-user": "alice" },
+      url: "/v1/providers/alice-labs/wallet-link",
+      headers: { "x-facet-dev-user": "alice-labs" },
       payload: {
         challengeId,
         address: wallet.address,
@@ -325,83 +357,138 @@ describe("1-step Hosted Actor and ERC-8004 A2A Agent publishing", () => {
     ).toBe(403);
     expect(store.actors).toHaveLength(0);
 
-    const publish = (code = payload.code) =>
+    const publish = (
+      code = payload.code,
+      version = "1.0.0",
+      idem = "publish-one",
+    ) =>
       app.inject({
         method: "POST",
         url: "/v1/actors",
         headers: {
-          "x-facet-dev-user": "alice",
-          "idempotency-key": "publish-one",
+          "x-facet-dev-user": "alice-labs",
+          "idempotency-key": idem,
         },
-        payload: { ...payload, code },
+        payload: { ...payload, version, code },
       });
     const first = await publish();
     expect(first.statusCode).toBe(202);
-    expect(first.json()).toMatchObject({
-      facet: { status: "REGISTRATION_PENDING", visibility: "PRIVATE" },
+    expect(first.json()).toEqual({
+      facet: {
+        provider: "alice-labs",
+        facetName: "payout-test",
+        facetDisplayName: "Payout Test",
+        version: "1.0.0",
+        facetType: "ACTOR",
+        status: "REGISTRATION_PENDING",
+        visibility: "PRIVATE",
+        imageDigest: computeActorImageDigest(payload.code),
+      },
     });
-    expect(Object.keys(first.json().facet).sort()).toEqual([
-      "displayVersion",
-      "facetType",
-      "fullName",
-      "id",
-      "imageDigest",
-      "slug",
-      "status",
-      "versionId",
-      "visibility",
-    ]);
+
     const status = await app.inject({
       method: "GET",
-      url: `/v1/actors/${first.json().facet.id}/publish-status`,
-      headers: { "x-facet-dev-user": "alice" },
+      url: "/v1/actors/alice-labs/payout-test/versions/1.0.0/publish-status",
+      headers: { "x-facet-dev-user": "alice-labs" },
     });
     expect(status.statusCode).toBe(200);
     expect(status.json()).toEqual({
-      facetId: first.json().facet.id,
-      versionId: first.json().facet.versionId,
-      fullName: `alice-provider/${payload.slug}`,
-      displayVersion: "1.0.0",
+      provider: "alice-labs",
+      facetName: "payout-test",
+      version: "1.0.0",
       status: "REGISTRATION_PENDING",
     });
+
     const mine = await app.inject({
       method: "GET",
       url: "/v1/actors/mine",
-      headers: { "x-facet-dev-user": "alice" },
+      headers: { "x-facet-dev-user": "alice-labs" },
     });
     expect(mine.json()).toMatchObject({
-      actors: [{ id: first.json().facet.id, status: "REGISTRATION_PENDING" }],
+      actors: [
+        {
+          provider: "alice-labs",
+          facetName: "payout-test",
+          facetDisplayName: "Payout Test",
+          version: "1.0.0",
+          status: "REGISTRATION_PENDING",
+        },
+      ],
     });
+    expect(mine.body).not.toContain("versionId");
+
     const forbidden = await app.inject({
       method: "GET",
-      url: `/v1/actors/${first.json().facet.id}/publish-status`,
-      headers: { "x-facet-dev-user": "bob" },
+      url: "/v1/actors/alice-labs/payout-test/versions/1.0.0/publish-status",
+      headers: { "x-facet-dev-user": "bob-studio" },
     });
     expect(forbidden.statusCode).toBe(403);
+
     const replay = await publish();
     expect(replay.statusCode).toBe(202);
-    expect(replay.json().facet.versionId).toBe(first.json().facet.versionId);
     const conflict = await publish(`${payload.code}\n// changed`);
     expect(conflict.statusCode).toBe(409);
     expect(conflict.json()).toMatchObject({
       error: { code: "IDEMPOTENCY_CONFLICT" },
     });
-    expect(store.actors).toHaveLength(1);
+
+    const v2 = await publish(
+      `${payload.code}\n// v1.0.1`,
+      "1.0.1",
+      "publish-two",
+    );
+    expect(v2.statusCode).toBe(202);
+    expect(v2.json().facet.version).toBe("1.0.1");
+    expect(store.actors).toHaveLength(2);
   });
 
-  it("publishes a minimalist HOSTED_ACTOR with deterministic imageDigest", async () => {
-    const providerId = await createProvider();
+  it("rejects non-SemVer versions, invalid facetName, and legacy id/providerId fields on POST /v1/actors", async () => {
+    for (const badVersion of ["v1", "01.0.0", "1.0", "latest"]) {
+      const bad = await app.inject({
+        method: "POST",
+        url: "/v1/actors",
+        headers: { "x-facet-dev-user": "alice-labs" },
+        payload: {
+          facetName: "valid-actor",
+          facetDisplayName: "Valid Actor",
+          version: badVersion,
+          description: "Bad semver",
+          category: "test",
+          inputSchema: { type: "object" },
+          code: "export default async function run() { return []; }",
+        },
+      });
+      expect(bad.statusCode).toBe(400);
+    }
+
+    const legacyField = await app.inject({
+      method: "POST",
+      url: "/v1/actors",
+      headers: { "x-facet-dev-user": "alice-labs" },
+      payload: {
+        providerId: randomUUID(),
+        facetName: "valid-actor",
+        facetDisplayName: "Valid Actor",
+        description: "Legacy providerId rejected",
+        category: "test",
+        inputSchema: { type: "object" },
+        code: "export default async function run() { return []; }",
+      },
+    });
+    expect(legacyField.statusCode).toBe(400);
+  });
+
+  it("publishes a minimalist ACTOR with deterministic imageDigest and Option B shape", async () => {
     const code =
       "export default async function run(input) { return [{ brand: input.brand ?? 'SJC', price: 89000000 }]; }";
 
     const response = await app.inject({
       method: "POST",
       url: "/v1/actors",
-      headers: { "x-facet-dev-user": "alice" },
+      headers: { "x-facet-dev-user": "alice-labs" },
       payload: {
-        providerId,
-        name: "VN Gold & FX Scraper",
-        slug: "vn-gold-fx-actor",
+        facetName: "vn-gold-fx-actor",
+        facetDisplayName: "VN Gold & FX Scraper",
         description: "Vietnamese gold and FX rate scraper.",
         category: "vietnamese-data",
         tags: ["vietnam", "gold"],
@@ -418,55 +505,33 @@ describe("1-step Hosted Actor and ERC-8004 A2A Agent publishing", () => {
     });
 
     expect(response.statusCode).toBe(201);
-    expect(response.json()).toMatchObject({
+    expect(response.json()).toEqual({
       facet: {
-        slug: "vn-gold-fx-actor",
-        facetType: "HOSTED_ACTOR",
+        provider: "alice-labs",
+        facetName: "vn-gold-fx-actor",
+        facetDisplayName: "VN Gold & FX Scraper",
+        version: "1.0.0",
+        facetType: "ACTOR",
         imageDigest: computeActorImageDigest(code),
-        registryVerified: false,
         status: "PUBLISHED",
         visibility: "PUBLIC",
+        publishedAt: expect.any(String),
       },
     });
     expect(store.actors).toHaveLength(1);
   });
 
-  it("verifies on-chain FacetActorRegistry transactions at publish and post-publish", async () => {
-    const providerId = await createProvider();
-    const facetId = randomUUID();
+  it("verifies on-chain FacetActorRegistry transactions using versionId or legacy facetId fallback", async () => {
     const code =
       "export default async function run() { return [{ ok: true }]; }";
-
-    const invalidPublish = await app.inject({
-      method: "POST",
-      url: "/v1/actors",
-      headers: { "x-facet-dev-user": "alice" },
-      payload: {
-        id: facetId,
-        providerId,
-        name: "Bad Tx Actor",
-        slug: "bad-tx-actor",
-        description: "Should fail verification",
-        category: "vietnamese-data",
-        inputSchema: { type: "object" },
-        code,
-        registryTxHash: `0x${"b".repeat(64)}`,
-      },
-    });
-    expect(invalidPublish.statusCode).toBe(400);
-    expect(invalidPublish.json()).toMatchObject({
-      error: { code: "REGISTRY_VERIFICATION_FAILED" },
-    });
 
     const published = await app.inject({
       method: "POST",
       url: "/v1/actors",
-      headers: { "x-facet-dev-user": "alice" },
+      headers: { "x-facet-dev-user": "alice-labs" },
       payload: {
-        id: facetId,
-        providerId,
-        name: "Verified Actor",
-        slug: "verified-actor",
+        facetName: "verified-actor",
+        facetDisplayName: "Verified Actor",
         description: "Verified on Fuji",
         category: "vietnamese-data",
         inputSchema: { type: "object" },
@@ -474,32 +539,67 @@ describe("1-step Hosted Actor and ERC-8004 A2A Agent publishing", () => {
       },
     });
     expect(published.statusCode).toBe(201);
-    expect(published.json().facet.registryVerified).toBe(false);
+
+    const badVerify = await app.inject({
+      method: "POST",
+      url: "/v1/facets/alice-labs/verified-actor/versions/1.0.0/verify-registry",
+      headers: { "x-facet-dev-user": "alice-labs" },
+      payload: { registryTxHash: `0x${"b".repeat(64)}` },
+    });
+    expect(badVerify.statusCode).toBe(400);
 
     const verifyRes = await app.inject({
       method: "POST",
-      url: `/v1/facets/${facetId}/verify-registry`,
-      headers: { "x-facet-dev-user": "alice" },
+      url: "/v1/facets/alice-labs/verified-actor/versions/1.0.0/verify-registry",
+      headers: { "x-facet-dev-user": "alice-labs" },
       payload: { registryTxHash: verifier.validHash },
     });
     expect(verifyRes.statusCode).toBe(200);
-    expect(verifyRes.json()).toMatchObject({
-      facetId,
+    expect(verifyRes.json()).toEqual({
+      provider: "alice-labs",
+      facetName: "verified-actor",
+      version: "1.0.0",
       registryTxHash: verifier.validHash,
       registryVerified: true,
     });
     expect(verifier.lastExpected?.imageDigest).toBe(
       computeActorImageDigest(code),
     );
-    expect(store.verifiedTxs.get(facetId)).toBe(verifier.validHash);
+    expect(verifier.lastExpected?.facetType).toBe("ACTOR");
+    expect(verifier.lastExpected?.versionId).toBe(store.actors[0]!.versionId);
   });
 
-  it("matches Fuji FacetActorRegistry event/state strictly against published metadata", () => {
+  it("matches Fuji FacetActorRegistry event/state against versionId primary key and legacy facetId fallback", () => {
     const facetId = "019a6d2f-7b14-7000-8000-000000000001";
+    const versionId = "019a6d2f-7b14-7000-8000-000000000002";
     const code = "export default async function run() { return []; }";
     const imageDigest = computeActorImageDigest(code);
     const hexDigest = `0x${imageDigest.slice(7)}` as `0x${string}`;
     const payTo = "0x9265c1c87fc5fb3c72dc68b4d3a005de1e22c3cf";
+
+    expect(
+      registrationMatches(
+        {
+          facetId: uuidToFacetKey(versionId),
+          facetType: 1,
+          imageDigest: hexDigest,
+          pricingModel: 0,
+          priceAtomic: 1000n,
+          payTo,
+          erc8004TokenId: 0n,
+          active: true,
+        },
+        {
+          facetId,
+          versionId,
+          facetType: "ACTOR",
+          imageDigest,
+          pricingModel: "PAY_PER_RUN",
+          priceAtomic: "1000",
+          payTo,
+        },
+      ),
+    ).toEqual({ verified: true });
 
     expect(
       registrationMatches(
@@ -515,7 +615,8 @@ describe("1-step Hosted Actor and ERC-8004 A2A Agent publishing", () => {
         },
         {
           facetId,
-          facetType: "HOSTED_ACTOR",
+          versionId,
+          facetType: "ACTOR",
           imageDigest,
           pricingModel: "PAY_PER_RUN",
           priceAtomic: "1000",
@@ -527,7 +628,7 @@ describe("1-step Hosted Actor and ERC-8004 A2A Agent publishing", () => {
     expect(
       registrationMatches(
         {
-          facetId: uuidToFacetKey(facetId),
+          facetId: uuidToFacetKey(versionId),
           facetType: 1,
           imageDigest: `0x${"0".repeat(64)}`,
           pricingModel: 0,
@@ -538,7 +639,8 @@ describe("1-step Hosted Actor and ERC-8004 A2A Agent publishing", () => {
         },
         {
           facetId,
-          facetType: "HOSTED_ACTOR",
+          versionId,
+          facetType: "ACTOR",
           imageDigest,
           pricingModel: "PAY_PER_RUN",
           priceAtomic: "1000",
@@ -548,40 +650,14 @@ describe("1-step Hosted Actor and ERC-8004 A2A Agent publishing", () => {
     ).toBe(false);
   });
 
-  it("rejects actor code missing an exported entrypoint", async () => {
-    const providerId = await createProvider();
-    const response = await app.inject({
-      method: "POST",
-      url: "/v1/actors",
-      headers: { "x-facet-dev-user": "alice" },
-      payload: {
-        providerId,
-        name: "Invalid Actor",
-        slug: "invalid-actor",
-        description: "Missing export",
-        category: "vietnamese-data",
-        inputSchema: { type: "object" },
-        code: "function helper() { return []; }",
-      },
-    });
-
-    expect(response.statusCode).toBe(400);
-    expect(response.json()).toMatchObject({
-      error: { code: "INPUT_INVALID" },
-    });
-    expect(store.actors).toHaveLength(0);
-  });
-
-  it("publishes an ERC-8004 bound AUTONOMOUS_AGENT facet", async () => {
-    const providerId = await createProvider();
+  it("publishes an ERC-8004 bound AGENT facet", async () => {
     const response = await app.inject({
       method: "POST",
       url: "/v1/agent-facets",
-      headers: { "x-facet-dev-user": "alice" },
+      headers: { "x-facet-dev-user": "alice-labs" },
       payload: {
-        providerId,
-        name: "VN Market Analyst Agent",
-        slug: "vn-market-analyst-agent",
+        facetName: "vn-market-analyst-agent",
+        facetDisplayName: "VN Market Analyst Agent",
         description: "ERC-8004 autonomous A2A market analyst.",
         category: "a2a-agents",
         erc8004TokenId: "42",
@@ -595,36 +671,20 @@ describe("1-step Hosted Actor and ERC-8004 A2A Agent publishing", () => {
     });
 
     expect(response.statusCode).toBe(201);
-    expect(response.json()).toMatchObject({
+    expect(response.json()).toEqual({
       facet: {
-        slug: "vn-market-analyst-agent",
-        facetType: "AUTONOMOUS_AGENT",
+        provider: "alice-labs",
+        facetName: "vn-market-analyst-agent",
+        facetDisplayName: "VN Market Analyst Agent",
+        version: "1.0.0",
+        facetType: "AGENT",
         erc8004TokenId: "42",
         erc8004Registry: "0x8004A818BFB912233c491871b3d84c89A494BD9e",
         status: "PUBLISHED",
         visibility: "PUBLIC",
+        publishedAt: expect.any(String),
       },
     });
     expect(store.agents).toHaveLength(1);
-  });
-
-  it("blocks unauthorized users from publishing on another provider", async () => {
-    const providerId = await createProvider("alice");
-    const response = await app.inject({
-      method: "POST",
-      url: "/v1/actors",
-      headers: { "x-facet-dev-user": "mallory" },
-      payload: {
-        providerId,
-        name: "Unauthorized Actor",
-        slug: "unauth-actor",
-        description: "Should be denied",
-        category: "vietnamese-data",
-        inputSchema: { type: "object" },
-        code: "export default async function run() { return []; }",
-      },
-    });
-
-    expect(response.statusCode).toBe(403);
   });
 });

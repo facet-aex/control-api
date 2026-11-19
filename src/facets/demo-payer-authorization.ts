@@ -4,25 +4,38 @@ import { z } from "zod";
 
 import type { IdentityAuthenticator } from "../auth/types.js";
 import { AppError } from "../errors.js";
+import {
+  FACET_NAME_REGEX,
+  SEMVER_REGEX,
+  USERNAME_REGEX,
+} from "../identifiers.js";
 import type { ProviderStore } from "../providers/provider-types.js";
 
 const requestSchema = z
   .object({
-    facetVersionId: z.string().uuid(),
+    provider: z.string().regex(USERNAME_REGEX),
+    facetName: z.string().regex(FACET_NAME_REGEX),
+    version: z.string().regex(SEMVER_REGEX),
     idempotencyKey: z.string().min(1).max(128),
   })
   .strict();
 
+export interface DemoPayerTarget {
+  provider: string;
+  facetName: string;
+  version: string;
+}
+
 export interface DemoPayerGrant {
   amountAtomic: string;
-  payTo: string;
+  providerPayTo: string;
   remainingToday: number;
 }
 
 export interface DemoPayerAllowance {
   authorize(
     userId: string,
-    versionId: string,
+    target: DemoPayerTarget,
     idempotencyKey: string,
     now: Date,
   ): Promise<DemoPayerGrant>;
@@ -36,7 +49,7 @@ export class PostgresDemoPayerAllowance implements DemoPayerAllowance {
 
   async authorize(
     userId: string,
-    versionId: string,
+    target: DemoPayerTarget,
     idempotencyKey: string,
     now: Date,
   ): Promise<DemoPayerGrant> {
@@ -49,23 +62,28 @@ export class PostgresDemoPayerAllowance implements DemoPayerAllowance {
         [`${userId}:${dayUtc}`],
       );
       const version = await client.query<{
+        version_id: string;
         price_atomic: string;
         pay_to: string;
       }>(
-        `select version.price_atomic, version.pay_to
+        `select version.id as version_id, version.price_atomic, version.pay_to
            from facet_versions as version
            join facets as facet on facet.id = version.facet_id
-          where version.id = $1::uuid
+           join users as u on u.id = facet.provider_id
+          where u.username = $1
+            and facet.facet_name = $2
+            and version.version = $3
+            and u.status = 'active'
             and version.status = 'published'
             and version.registry_verified = true
             and version.price_atomic = '1000'
             and version.pricing_model = 'PAY_PER_RUN'
             and version.pay_to is not null
-            and facet.type = 'hosted_actor'
+            and facet.type = 'ACTOR'
             and facet.status = 'published'
             and facet.visibility = 'public'
             and facet.current_published_version_id = version.id`,
-        [versionId],
+        [target.provider, target.facetName, target.version],
       );
       const terms = version.rows[0];
       if (!terms)
@@ -79,7 +97,10 @@ export class PostgresDemoPayerAllowance implements DemoPayerAllowance {
           where user_id = $1::uuid and idempotency_key = $2`,
         [userId, idempotencyKey],
       );
-      if (previous.rows[0] && previous.rows[0].facet_version_id !== versionId) {
+      if (
+        previous.rows[0] &&
+        previous.rows[0].facet_version_id !== terms.version_id
+      ) {
         throw new AppError(
           "IDEMPOTENCY_CONFLICT",
           "This key was used for another Actor version.",
@@ -103,13 +124,13 @@ export class PostgresDemoPayerAllowance implements DemoPayerAllowance {
         await client.query(
           `insert into demo_payer_authorizations (user_id, facet_version_id, idempotency_key, day_utc)
            values ($1::uuid, $2::uuid, $3, $4)`,
-          [userId, versionId, idempotencyKey, dayUtc],
+          [userId, terms.version_id, idempotencyKey, dayUtc],
         );
       }
       await client.query("commit");
       return {
         amountAtomic: terms.price_atomic,
-        payTo: terms.pay_to,
+        providerPayTo: terms.pay_to,
         remainingToday: this.maxPerDay - used - (previous.rows[0] ? 0 : 1),
       };
     } catch (error) {
@@ -138,13 +159,12 @@ export async function registerDemoPayerRoutes(
         ? { devUser: request.headers["x-facet-dev-user"] }
         : {}),
     });
-    const { facetVersionId, idempotencyKey } = requestSchema.parse(
-      request.body,
-    );
+    const { provider, facetName, version, idempotencyKey } =
+      requestSchema.parse(request.body);
     const user = await dependencies.providers.upsertUser(identity);
     return dependencies.allowance.authorize(
       user.id,
-      facetVersionId,
+      { provider, facetName, version },
       idempotencyKey,
       new Date(),
     );

@@ -1,3 +1,11 @@
+import {
+  FACET_NAME_PATTERN,
+  FACET_TYPES,
+  PRICING_MODELS,
+  SEMVER_PATTERN,
+  USERNAME_PATTERN,
+} from "../identifiers.js";
+
 export const FACET_MANIFEST_SCHEMA_ID =
   "https://facet.local/schemas/facet-manifest.v1.json";
 
@@ -10,11 +18,12 @@ export const facetManifestSchema = {
     "schemaVersion",
     "facetId",
     "versionId",
-    "displayVersion",
     "providerId",
+    "provider",
+    "facetName",
+    "facetDisplayName",
+    "version",
     "type",
-    "name",
-    "slug",
     "summary",
     "description",
     "category",
@@ -29,15 +38,26 @@ export const facetManifestSchema = {
     schemaVersion: { const: "facet.manifest/v1" },
     facetId: { type: "string", format: "uuid" },
     versionId: { type: "string", format: "uuid" },
-    displayVersion: { type: "string", minLength: 1 },
     providerId: { type: "string", format: "uuid" },
-    type: {
-      enum: ["EXTERNAL_HTTP_API", "HOSTED_ACTOR", "AUTONOMOUS_AGENT"],
-    },
-    name: { type: "string", minLength: 1, maxLength: 120 },
-    slug: {
+    provider: {
       type: "string",
-      pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      minLength: 8,
+      maxLength: 16,
+      pattern: USERNAME_PATTERN,
+    },
+    facetName: {
+      type: "string",
+      minLength: 4,
+      maxLength: 32,
+      pattern: FACET_NAME_PATTERN,
+    },
+    facetDisplayName: { type: "string", minLength: 1, maxLength: 120 },
+    version: {
+      type: "string",
+      pattern: SEMVER_PATTERN,
+    },
+    type: {
+      enum: [...FACET_TYPES],
     },
     summary: { type: "string", maxLength: 280 },
     description: { type: "string", maxLength: 10_000 },
@@ -124,7 +144,7 @@ export const facetManifestSchema = {
       additionalProperties: false,
       required: ["model", "priceAtomic", "assetAddress", "chainId", "payTo"],
       properties: {
-        model: { enum: ["PAY_PER_RUN", "PAY_PER_RESULT"] },
+        model: { enum: [...PRICING_MODELS] },
         priceAtomic: { type: "string", pattern: "^[0-9]+$" },
         assetAddress: {
           type: "string",
@@ -180,5 +200,7 @@ export const facetManifestSchema = {
         sourceOperationPointer: { type: "string", pattern: "^#/" },
       },
     },
+    contentHash: { type: "string", pattern: "^sha256:[a-f0-9]{64}$" },
+    publishedAt: { type: "string", format: "date-time" },
   },
 } as const;

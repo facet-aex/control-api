@@ -27,17 +27,30 @@ class MemoryEndpointConfigStore implements EndpointConfigStore {
     }
   >();
 
-  seedVersion(providerId: string, status: "draft" | "published" = "draft") {
-    const versionId = randomUUID();
-    this.contexts.set(versionId, {
-      facetVersionId: versionId,
+  private key(provider: string, facetName: string, version: string) {
+    return `${provider}/${facetName}@${version}`;
+  }
+
+  seedVersion(
+    providerId: string,
+    provider = "alice-labs",
+    facetName = "github-repo",
+    version = "0.1.0",
+    status: "draft" | "published" = "draft",
+  ) {
+    const facetVersionId = randomUUID();
+    this.contexts.set(this.key(provider, facetName, version), {
+      facetVersionId,
       providerId,
+      provider,
+      facetName,
+      version,
       status,
-      version: 1,
+      revision: 1,
       method: "GET",
       pathTemplate: "/repos/{owner}/{repo}",
     });
-    return versionId;
+    return facetVersionId;
   }
 
   seedSecret(providerId: string, kind: "api_key" | "bearer_token") {
@@ -46,17 +59,19 @@ class MemoryEndpointConfigStore implements EndpointConfigStore {
     return id;
   }
 
-  async getContext(versionId: string) {
-    return this.contexts.get(versionId);
+  async getContextByName(provider: string, facetName: string, version: string) {
+    return this.contexts.get(this.key(provider, facetName, version));
   }
 
   async configure(input: Parameters<EndpointConfigStore["configure"]>[0]) {
-    const context = this.contexts.get(input.facetVersionId);
+    const context = [...this.contexts.values()].find(
+      (item) => item.facetVersionId === input.facetVersionId,
+    );
     if (!context || context.providerId !== input.providerId) return undefined;
     if (context.status !== "draft") {
       throw new AppError("RESOURCE_CONFLICT", "Version is immutable.", 409);
     }
-    if (context.version !== input.expectedVersion) {
+    if (context.revision !== input.expectedRevision) {
       throw new AppError(
         "VERSION_PRECONDITION_FAILED",
         "Version conflict.",
@@ -81,9 +96,10 @@ class MemoryEndpointConfigStore implements EndpointConfigStore {
     const now = new Date("2026-11-10T00:00:00.000Z");
     const previous = this.configs.get(input.facetVersionId);
     const record: EndpointConfigRecord = {
-      id: previous?.id ?? randomUUID(),
-      facetVersionId: input.facetVersionId,
-      facetVersionVersion: context.version + 1,
+      provider: context.provider,
+      facetName: context.facetName,
+      version: context.version,
+      facetVersionRevision: context.revision + 1,
       providerId: input.providerId,
       protectedBaseUrl: input.baseUrl,
       method: context.method,
@@ -94,15 +110,18 @@ class MemoryEndpointConfigStore implements EndpointConfigStore {
       timeoutMs: input.timeoutMs,
       maxResponseBytes: input.maxResponseBytes,
       redirectPolicy: input.redirectPolicy,
-      version: (previous?.version ?? 0) + 1,
+      revision: (previous?.revision ?? 0) + 1,
       createdAt: previous?.createdAt ?? now,
       updatedAt: now,
     };
     this.configs.set(input.facetVersionId, record);
-    this.contexts.set(input.facetVersionId, {
-      ...context,
-      version: record.facetVersionVersion,
-    });
+    this.contexts.set(
+      this.key(context.provider, context.facetName, context.version),
+      {
+        ...context,
+        revision: record.facetVersionRevision,
+      },
+    );
     return record;
   }
 }
@@ -132,28 +151,26 @@ beforeEach(async () => {
 
 afterEach(async () => app.close());
 
-async function createProvider(user = "alice"): Promise<string> {
-  const response = await app.inject({
-    method: "POST",
-    url: "/v1/providers",
-    headers: { "x-facet-dev-user": user },
-    payload: { slug: `${user}-endpoints`, name: `${user} Endpoints` },
+async function ensureUserId(username = "alice-labs"): Promise<string> {
+  const user = await providers.upsertUser({
+    subject: `local:${username}`,
+    username,
   });
-  return response.json().provider.id as string;
+  return user.id;
 }
 
-describe("draft endpoint configuration", () => {
-  it("configures API-key auth without exposing the protected base URL", async () => {
-    const providerId = await createProvider();
+describe("draft endpoint configuration (Option B + revision)", () => {
+  it("configures API-key auth by natural keys without exposing protected base URL or UUIDs", async () => {
+    const providerId = await ensureUserId("alice-labs");
     const versionId = endpoints.seedVersion(providerId);
     const secretRefId = endpoints.seedSecret(providerId, "api_key");
 
     const response = await app.inject({
       method: "PUT",
-      url: `/v1/facet-versions/${versionId}/endpoint-config`,
-      headers: { "x-facet-dev-user": "alice" },
+      url: "/v1/facets/alice-labs/github-repo/versions/0.1.0/endpoint-config",
+      headers: { "x-facet-dev-user": "alice-labs" },
       payload: {
-        version: 1,
+        revision: 1,
         baseUrl: "https://api.github.com",
         auth: {
           kind: "API_KEY_HEADER",
@@ -167,35 +184,43 @@ describe("draft endpoint configuration", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({
+    expect(response.json()).toEqual({
       endpointConfig: {
-        facetVersionId: versionId,
-        facetVersionVersion: 2,
+        provider: "alice-labs",
+        facetName: "github-repo",
+        version: "0.1.0",
+        facetVersionRevision: 2,
         baseUrlConfigured: true,
         method: "GET",
         pathTemplate: "/repos/{owner}/{repo}",
         authKind: "API_KEY_HEADER",
-        secretRefId,
-        version: 1,
+        secretConfigured: true,
+        timeoutMs: 15_000,
+        maxResponseBytes: 1_048_576,
+        redirectPolicy: "DENY",
+        revision: 1,
+        createdAt: "2026-11-10T00:00:00.000Z",
+        updatedAt: "2026-11-10T00:00:00.000Z",
       },
     });
     expect(response.body).not.toContain("api.github.com");
+    expect(response.body).not.toContain(secretRefId);
     expect(endpoints.configs.get(versionId)?.protectedBaseUrl).toBe(
       "https://api.github.com/",
     );
   });
 
-  it("rejects invalid auth mappings, stale versions, and published versions", async () => {
-    const providerId = await createProvider();
-    const versionId = endpoints.seedVersion(providerId);
+  it("supports POST alias and rejects stale revisions, wrong secret kind, and published versions", async () => {
+    const providerId = await ensureUserId("alice-labs");
+    endpoints.seedVersion(providerId, "alice-labs", "github-repo", "0.1.0");
     const bearerSecret = endpoints.seedSecret(providerId, "bearer_token");
 
     const wrongKind = await app.inject({
-      method: "PUT",
-      url: `/v1/facet-versions/${versionId}/endpoint-config`,
-      headers: { "x-facet-dev-user": "alice" },
+      method: "POST",
+      url: "/v1/facets/alice-labs/github-repo/versions/0.1.0/endpoint-config",
+      headers: { "x-facet-dev-user": "alice-labs" },
       payload: {
-        version: 1,
+        revision: 1,
         baseUrl: "https://api.example.com",
         auth: {
           kind: "API_KEY_QUERY",
@@ -211,10 +236,10 @@ describe("draft endpoint configuration", () => {
 
     const stale = await app.inject({
       method: "PUT",
-      url: `/v1/facet-versions/${versionId}/endpoint-config`,
-      headers: { "x-facet-dev-user": "alice" },
+      url: "/v1/facets/alice-labs/github-repo/versions/0.1.0/endpoint-config",
+      headers: { "x-facet-dev-user": "alice-labs" },
       payload: {
-        version: 99,
+        revision: 99,
         baseUrl: "https://api.example.com",
         auth: { kind: "NONE" },
         timeoutMs: 1000,
@@ -224,13 +249,19 @@ describe("draft endpoint configuration", () => {
     });
     expect(stale.statusCode).toBe(412);
 
-    const publishedId = endpoints.seedVersion(providerId, "published");
+    endpoints.seedVersion(
+      providerId,
+      "alice-labs",
+      "published-api",
+      "1.0.0",
+      "published",
+    );
     const published = await app.inject({
       method: "PUT",
-      url: `/v1/facet-versions/${publishedId}/endpoint-config`,
-      headers: { "x-facet-dev-user": "alice" },
+      url: "/v1/facets/alice-labs/published-api/versions/1.0.0/endpoint-config",
+      headers: { "x-facet-dev-user": "alice-labs" },
       payload: {
-        version: 1,
+        revision: 1,
         baseUrl: "https://api.example.com",
         auth: { kind: "NONE" },
         timeoutMs: 1000,
@@ -241,15 +272,16 @@ describe("draft endpoint configuration", () => {
     expect(published.statusCode).toBe(409);
   });
 
-  it("denies another provider and rejects secret fields for no-auth", async () => {
-    const providerId = await createProvider();
-    const versionId = endpoints.seedVersion(providerId);
+  it("denies another user and rejects legacy `version` integer payload", async () => {
+    const providerId = await ensureUserId("alice-labs");
+    endpoints.seedVersion(providerId);
+
     const denied = await app.inject({
       method: "PUT",
-      url: `/v1/facet-versions/${versionId}/endpoint-config`,
-      headers: { "x-facet-dev-user": "mallory" },
+      url: "/v1/facets/alice-labs/github-repo/versions/0.1.0/endpoint-config",
+      headers: { "x-facet-dev-user": "mallory-x" },
       payload: {
-        version: 1,
+        revision: 1,
         baseUrl: "https://api.example.com",
         auth: { kind: "NONE" },
         timeoutMs: 1000,
@@ -259,19 +291,19 @@ describe("draft endpoint configuration", () => {
     });
     expect(denied.statusCode).toBe(403);
 
-    const invalid = await app.inject({
+    const legacyField = await app.inject({
       method: "PUT",
-      url: `/v1/facet-versions/${versionId}/endpoint-config`,
-      headers: { "x-facet-dev-user": "alice" },
+      url: "/v1/facets/alice-labs/github-repo/versions/0.1.0/endpoint-config",
+      headers: { "x-facet-dev-user": "alice-labs" },
       payload: {
         version: 1,
         baseUrl: "https://api.example.com",
-        auth: { kind: "NONE", parameterName: "X-Key" },
+        auth: { kind: "NONE" },
         timeoutMs: 1000,
         maxResponseBytes: 1024,
         redirectPolicy: "DENY",
       },
     });
-    expect(invalid.statusCode).toBe(400);
+    expect(legacyField.statusCode).toBe(400);
   });
 });

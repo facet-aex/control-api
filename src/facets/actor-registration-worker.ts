@@ -65,7 +65,7 @@ export class ActorRegistrationWorker {
     if (!job) return "idle";
 
     try {
-      const onChain = await this.chain.readRegistration(job.facetId);
+      const onChain = await this.chain.readRegistration(job.versionId);
       if (onChain && !matchesRegistration(job, onChain)) {
         await this.store.fail(job, "REGISTRY_MISMATCH");
         return "failed";

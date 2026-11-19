@@ -4,16 +4,20 @@ export type EndpointAuthKind =
 export interface FacetVersionEndpointContext {
   facetVersionId: string;
   providerId: string;
+  provider: string;
+  facetName: string;
+  version: string;
   status: "draft" | "valid" | "published" | "disabled";
-  version: number;
+  revision: number;
   method: string;
   pathTemplate: string;
 }
 
 export interface EndpointConfigRecord {
-  id: string;
-  facetVersionId: string;
-  facetVersionVersion: number;
+  provider: string;
+  facetName: string;
+  version: string;
+  facetVersionRevision: number;
   providerId: string;
   protectedBaseUrl: string;
   method: string;
@@ -24,20 +28,22 @@ export interface EndpointConfigRecord {
   timeoutMs: number;
   maxResponseBytes: number;
   redirectPolicy: "deny" | "same_origin";
-  version: number;
+  revision: number;
   createdAt: Date;
   updatedAt: Date;
 }
 
 export interface EndpointConfigStore {
-  getContext(
-    facetVersionId: string,
+  getContextByName(
+    provider: string,
+    facetName: string,
+    version: string,
   ): Promise<FacetVersionEndpointContext | undefined>;
   configure(input: {
     actorUserId: string;
     providerId: string;
     facetVersionId: string;
-    expectedVersion: number;
+    expectedRevision: number;
     baseUrl: string;
     authKind: EndpointAuthKind;
     authTemplate: Record<string, unknown>;

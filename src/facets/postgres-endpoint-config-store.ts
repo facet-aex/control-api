@@ -7,6 +7,7 @@ import {
   facetVersions,
   facets,
   secretRefs,
+  users,
 } from "../db/schema.js";
 import { AppError } from "../errors.js";
 import type {
@@ -76,21 +77,33 @@ function configuredManifest(
 export class PostgresEndpointConfigStore implements EndpointConfigStore {
   constructor(private readonly db: Db) {}
 
-  async getContext(
-    facetVersionId: string,
+  async getContextByName(
+    provider: string,
+    facetName: string,
+    version: string,
   ): Promise<FacetVersionEndpointContext | undefined> {
     const row = (
       await this.db
         .select({
           id: facetVersions.id,
           providerId: facets.providerId,
-          status: facetVersions.status,
+          provider: users.username,
+          facetName: facets.facetName,
           version: facetVersions.version,
+          status: facetVersions.status,
+          revision: facetVersions.revision,
           manifest: facetVersions.manifest,
         })
         .from(facetVersions)
         .innerJoin(facets, eq(facets.id, facetVersions.facetId))
-        .where(eq(facetVersions.id, facetVersionId))
+        .innerJoin(users, eq(users.id, facets.providerId))
+        .where(
+          and(
+            eq(users.username, provider),
+            eq(facets.facetName, facetName),
+            eq(facetVersions.version, version),
+          ),
+        )
         .limit(1)
     )[0];
     if (!row) return undefined;
@@ -98,8 +111,11 @@ export class PostgresEndpointConfigStore implements EndpointConfigStore {
     return {
       facetVersionId: row.id,
       providerId: row.providerId,
-      status: row.status,
+      provider: row.provider,
+      facetName: row.facetName,
       version: row.version,
+      status: row.status,
+      revision: row.revision,
       method: operation.method,
       pathTemplate: operation.path,
     };
@@ -107,34 +123,39 @@ export class PostgresEndpointConfigStore implements EndpointConfigStore {
 
   async configure(input: Parameters<EndpointConfigStore["configure"]>[0]) {
     return this.db.transaction(async (transaction) => {
-      const version = (
+      const current = (
         await transaction.execute<{
           id: string;
           facet_id: string;
           provider_id: string;
+          provider: string;
+          facet_name: string;
+          version: string;
           status: "draft" | "valid" | "published" | "disabled";
           revision: number;
           endpoint_config_id: string | null;
           manifest: unknown;
         }>(sql`
-          select fv.id, fv.facet_id, f.provider_id, fv.status,
+          select fv.id, fv.facet_id, f.provider_id, u.username as provider,
+                 f.facet_name, fv.version, fv.status,
                  fv.revision, fv.endpoint_config_id, fv.manifest
           from ${facetVersions} fv
           join ${facets} f on f.id = fv.facet_id
+          join ${users} u on u.id = f.provider_id
           where fv.id = ${input.facetVersionId}::uuid
             and f.provider_id = ${input.providerId}::uuid
-          for update
+          for update of fv
         `)
       ).rows[0];
-      if (!version) return undefined;
-      if (version.status !== "draft") {
+      if (!current) return undefined;
+      if (current.status !== "draft") {
         throw new AppError(
           "RESOURCE_CONFLICT",
           "Only a draft Facet Version can be configured.",
           409,
         );
       }
-      if (version.revision !== input.expectedVersion) {
+      if (current.revision !== input.expectedRevision) {
         throw new AppError(
           "VERSION_PRECONDITION_FAILED",
           "The Facet Version changed; reload it before retrying.",
@@ -184,7 +205,7 @@ export class PostgresEndpointConfigStore implements EndpointConfigStore {
         }
       }
 
-      const operation = readOperation(version.manifest);
+      const operation = readOperation(current.manifest);
       const values = {
         providerId: input.providerId,
         protectedBaseUrl: input.baseUrl,
@@ -199,14 +220,17 @@ export class PostgresEndpointConfigStore implements EndpointConfigStore {
         egressPolicyId: input.egressPolicyId,
         updatedAt: new Date(),
       };
-      const endpoint = version.endpoint_config_id
+      const endpoint = current.endpoint_config_id
         ? (
             await transaction
               .update(endpointConfigs)
-              .set({ ...values, version: sql`${endpointConfigs.version} + 1` })
+              .set({
+                ...values,
+                revision: sql`${endpointConfigs.revision} + 1`,
+              })
               .where(
                 and(
-                  eq(endpointConfigs.id, version.endpoint_config_id),
+                  eq(endpointConfigs.id, current.endpoint_config_id),
                   eq(endpointConfigs.providerId, input.providerId),
                 ),
               )
@@ -223,7 +247,7 @@ export class PostgresEndpointConfigStore implements EndpointConfigStore {
         );
       }
 
-      const manifest = configuredManifest(version.manifest, input);
+      const manifest = configuredManifest(current.manifest, input);
       const updatedVersion = (
         await transaction
           .update(facetVersions)
@@ -231,16 +255,16 @@ export class PostgresEndpointConfigStore implements EndpointConfigStore {
             endpointConfigId: endpoint.id,
             manifest,
             contentHash: hashFacetManifest(manifest),
-            version: sql`${facetVersions.version} + 1`,
+            revision: sql`${facetVersions.revision} + 1`,
             updatedAt: new Date(),
           })
           .where(
             and(
               eq(facetVersions.id, input.facetVersionId),
-              eq(facetVersions.version, input.expectedVersion),
+              eq(facetVersions.revision, input.expectedRevision),
             ),
           )
-          .returning({ version: facetVersions.version })
+          .returning({ revision: facetVersions.revision })
       )[0];
       if (!updatedVersion) {
         throw new AppError(
@@ -260,14 +284,15 @@ export class PostgresEndpointConfigStore implements EndpointConfigStore {
           endpointConfigId: endpoint.id,
           authKind: input.authKind,
           secretConfigured: input.secretRefId !== null,
-          endpointConfigVersion: endpoint.version,
+          endpointConfigRevision: endpoint.revision,
         },
       });
 
       return {
-        id: endpoint.id,
-        facetVersionId: input.facetVersionId,
-        facetVersionVersion: updatedVersion.version,
+        provider: current.provider,
+        facetName: current.facet_name,
+        version: current.version,
+        facetVersionRevision: updatedVersion.revision,
         providerId: endpoint.providerId,
         protectedBaseUrl: endpoint.protectedBaseUrl,
         method: endpoint.method,
@@ -278,7 +303,7 @@ export class PostgresEndpointConfigStore implements EndpointConfigStore {
         timeoutMs: endpoint.timeoutMs,
         maxResponseBytes: endpoint.maxResponseBytes,
         redirectPolicy: endpoint.redirectPolicy,
-        version: endpoint.version,
+        revision: endpoint.revision,
         createdAt: endpoint.createdAt,
         updatedAt: endpoint.updatedAt,
       } satisfies EndpointConfigRecord;

@@ -2,9 +2,32 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import type { IdentityAuthenticator } from "../auth/types.js";
+import {
+  isValidFacetName,
+  isValidSemver,
+  isValidUsername,
+} from "../identifiers.js";
 import type { EndpointConfigService } from "./endpoint-config-service.js";
 
 const idSchema = z.string().uuid();
+const paramsSchema = z.object({
+  provider: z
+    .string()
+    .refine(
+      isValidUsername,
+      "provider must be 8-16 character lowercase kebab-case.",
+    ),
+  facetName: z
+    .string()
+    .refine(
+      isValidFacetName,
+      "facetName must be 4-32 character lowercase kebab-case.",
+    ),
+  version: z
+    .string()
+    .refine(isValidSemver, "version must be strict SemVer MAJOR.MINOR.PATCH."),
+});
+
 const authSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("NONE") }).strict(),
   z.object({ kind: z.literal("BEARER"), secretRefId: idSchema }).strict(),
@@ -23,7 +46,7 @@ const authSchema = z.discriminatedUnion("kind", [
 ]);
 const configSchema = z
   .object({
-    version: z.number().int().positive(),
+    revision: z.number().int().positive(),
     baseUrl: z.string().url().max(2048),
     auth: authSchema,
     timeoutMs: z.number().int().min(100).max(60_000),
@@ -57,16 +80,23 @@ export async function registerEndpointConfigRoutes(
   app: FastifyInstance,
   dependencies: EndpointConfigRouteDependencies,
 ): Promise<void> {
-  app.put("/v1/facet-versions/:versionId/endpoint-config", async (request) => {
-    const { versionId } = z
-      .object({ versionId: idSchema })
-      .parse(request.params);
+  const handleConfigure = async (request: FastifyRequest) => {
+    const params = paramsSchema.parse(request.params);
     const payload = configSchema.parse(request.body);
     const identity = await authenticate(request, dependencies.authenticator);
     return dependencies.service.configure(
       identity,
-      { facetVersionId: versionId, ...payload },
+      { ...params, ...payload },
       request.id,
     );
-  });
+  };
+
+  app.put(
+    "/v1/facets/:provider/:facetName/versions/:version/endpoint-config",
+    handleConfigure,
+  );
+  app.post(
+    "/v1/facets/:provider/:facetName/versions/:version/endpoint-config",
+    handleConfigure,
+  );
 }

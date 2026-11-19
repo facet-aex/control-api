@@ -61,14 +61,14 @@ export class FujiActorRegistrar implements ActorRegistrationChain {
   }
 
   async readRegistration(
-    facetId: string,
+    registryKeyId: string,
   ): Promise<OnChainActorRegistration | null> {
     try {
       const record = await this.publicClient.readContract({
         address: this.registryAddress,
         abi: registryAbi,
         functionName: "getFacet",
-        args: [uuidToFacetKey(facetId)],
+        args: [uuidToFacetKey(registryKeyId)],
       });
       return {
         facetType: Number(record.facetType),
@@ -97,7 +97,7 @@ export class FujiActorRegistrar implements ActorRegistrationChain {
       abi: registryAbi,
       functionName: "registerFacet",
       args: [
-        uuidToFacetKey(job.facetId),
+        uuidToFacetKey(job.versionId),
         {
           facetType: 1,
           imageDigest: job.imageDigest.replace(/^sha256:/u, "0x") as Hex,

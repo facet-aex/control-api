@@ -2,20 +2,28 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import type { IdentityAuthenticator } from "../auth/types.js";
+import { isValidFacetName, isValidSemver } from "../identifiers.js";
 import type { FacetDraftService } from "./facet-draft-service.js";
 
 const idSchema = z.string().uuid();
-const slugSchema = z
+const facetNameSchema = z
   .string()
   .trim()
-  .min(2)
-  .max(80)
-  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u);
+  .refine(
+    isValidFacetName,
+    "facetName must be 4-32 character lowercase hyphenated kebab-case.",
+  );
+const semverSchema = z
+  .string()
+  .trim()
+  .refine(isValidSemver, "version must be strict SemVer MAJOR.MINOR.PATCH.");
+
 const selectionSchema = z
   .object({
     operationCandidateId: idSchema,
-    slug: slugSchema,
-    name: z.string().trim().min(1).max(120),
+    facetName: facetNameSchema,
+    facetDisplayName: z.string().trim().min(1).max(120),
+    version: semverSchema.optional(),
     summary: z.string().trim().max(280).optional(),
     description: z.string().trim().max(10_000).optional(),
     category: z.string().trim().min(1).max(80),
@@ -28,9 +36,9 @@ const selectionSchema = z
     ]),
   })
   .strict();
+
 const createFacetDraftsSchema = z
   .object({
-    providerId: idSchema,
     importJobId: idSchema,
     selections: z.array(selectionSchema).min(1).max(200),
   })
@@ -48,12 +56,6 @@ async function authenticate(
       : {}),
     ...(first(request.headers["x-facet-dev-user"])
       ? { devUser: first(request.headers["x-facet-dev-user"]) }
-      : {}),
-    ...(first(request.headers["x-facet-dev-email"])
-      ? { devEmail: first(request.headers["x-facet-dev-email"]) }
-      : {}),
-    ...(first(request.headers["x-facet-dev-display-name"])
-      ? { devDisplayName: first(request.headers["x-facet-dev-display-name"]) }
       : {}),
   });
 }

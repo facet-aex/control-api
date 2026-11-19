@@ -6,6 +6,7 @@ import {
   endpointConfigs,
   facetVersions,
   facets,
+  users,
 } from "../db/schema.js";
 import { AppError } from "../errors.js";
 import type {
@@ -71,16 +72,21 @@ function acknowledgementsFrom(value: unknown): StoredWarningAcknowledgement[] {
 export class PostgresFacetValidationStore implements FacetValidationStore {
   constructor(private readonly db: Db) {}
 
-  async getContext(
-    facetVersionId: string,
+  async getContextByName(
+    provider: string,
+    facetName: string,
+    version: string,
   ): Promise<FacetValidationContext | undefined> {
     const row = (
       await this.db
         .select({
           id: facetVersions.id,
           providerId: facets.providerId,
-          status: facetVersions.status,
+          provider: users.username,
+          facetName: facets.facetName,
           version: facetVersions.version,
+          status: facetVersions.status,
+          revision: facetVersions.revision,
           manifest: facetVersions.manifest,
           validationResult: facetVersions.validationResult,
           warningAcknowledgements: facetVersions.warningAcknowledgements,
@@ -89,19 +95,29 @@ export class PostgresFacetValidationStore implements FacetValidationStore {
         })
         .from(facetVersions)
         .innerJoin(facets, eq(facets.id, facetVersions.facetId))
+        .innerJoin(users, eq(users.id, facets.providerId))
         .leftJoin(
           endpointConfigs,
           eq(endpointConfigs.id, facetVersions.endpointConfigId),
         )
-        .where(eq(facetVersions.id, facetVersionId))
+        .where(
+          and(
+            eq(users.username, provider),
+            eq(facets.facetName, facetName),
+            eq(facetVersions.version, version),
+          ),
+        )
         .limit(1)
     )[0];
     if (!row) return undefined;
     return {
       facetVersionId: row.id,
       providerId: row.providerId,
-      status: row.status,
+      provider: row.provider,
+      facetName: row.facetName,
       version: row.version,
+      status: row.status,
+      revision: row.revision,
       manifest: row.manifest,
       endpointConfig: row.endpointAuthKind
         ? {
@@ -125,8 +141,9 @@ export class PostgresFacetValidationStore implements FacetValidationStore {
           .select({
             id: facetVersions.id,
             providerId: facets.providerId,
-            status: facetVersions.status,
             version: facetVersions.version,
+            status: facetVersions.status,
+            revision: facetVersions.revision,
           })
           .from(facetVersions)
           .innerJoin(facets, eq(facets.id, facetVersions.facetId))
@@ -147,7 +164,7 @@ export class PostgresFacetValidationStore implements FacetValidationStore {
           409,
         );
       }
-      if (current.version !== input.expectedVersion) {
+      if (current.revision !== input.expectedRevision) {
         throw new AppError(
           "VERSION_PRECONDITION_FAILED",
           "The Facet Version changed; reload it before retrying.",
@@ -161,19 +178,20 @@ export class PostgresFacetValidationStore implements FacetValidationStore {
             status: input.status,
             validationResult: input.validation,
             warningAcknowledgements: input.warningAcknowledgements,
-            version: sql`${facetVersions.version} + 1`,
+            revision: sql`${facetVersions.revision} + 1`,
             updatedAt: new Date(),
           })
           .where(
             and(
               eq(facetVersions.id, input.facetVersionId),
-              eq(facetVersions.version, input.expectedVersion),
+              eq(facetVersions.revision, input.expectedRevision),
             ),
           )
           .returning({
             id: facetVersions.id,
-            status: facetVersions.status,
             version: facetVersions.version,
+            status: facetVersions.status,
+            revision: facetVersions.revision,
             validationResult: facetVersions.validationResult,
             warningAcknowledgements: facetVersions.warningAcknowledgements,
           })
@@ -201,8 +219,9 @@ export class PostgresFacetValidationStore implements FacetValidationStore {
       });
       return {
         facetVersionId: updated.id,
-        status: updated.status as "draft" | "valid",
         version: updated.version,
+        status: updated.status as "draft" | "valid",
+        revision: updated.revision,
         validation:
           updated.validationResult as StoredFacetValidation["validation"],
         warningAcknowledgements: acknowledgementsFrom(

@@ -85,7 +85,7 @@ export class PostgresActorRegistrationStore implements ActorRegistrationWorkerSt
       const version = await client.query(
         `update facet_versions set status = 'published', registry_verified = true,
             registry_tx_hash = $2, published_at = now(), published_by = created_by, updated_at = now()
-          where id = $1::uuid and status = 'valid'`,
+          where id = $1::uuid and status in ('draft', 'valid')`,
         [job.versionId, job.txHash],
       );
       if (version.rowCount !== 1)
@@ -93,7 +93,7 @@ export class PostgresActorRegistrationStore implements ActorRegistrationWorkerSt
       const facet = await client.query(
         `update facets set status = 'published', visibility = 'public',
             current_published_version_id = $2::uuid, updated_at = now()
-          where id = $1::uuid and status = 'draft'`,
+          where id = $1::uuid and status in ('draft', 'published')`,
         [job.facetId, job.versionId],
       );
       if (facet.rowCount !== 1)

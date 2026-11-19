@@ -2,37 +2,16 @@ import cors from "@fastify/cors";
 import Fastify, { type FastifyInstance } from "fastify";
 import { ZodError } from "zod";
 
+import {
+  registerClerkWebhookRoutes,
+  type ClerkWebhookRouteDependencies,
+} from "./auth/clerk-webhook.js";
+import type { IdentityAuthenticator } from "./auth/types.js";
 import { AppError } from "./errors.js";
-import { registerPublicCatalogRoutes } from "./facets/public-catalog-routes.js";
-import type { PublicCatalog } from "./facets/public-catalog.js";
 import {
   registerActorAgentRoutes,
   type ActorAgentRouteDependencies,
 } from "./facets/actor-agent-routes.js";
-import {
-  registerFacetDraftRoutes,
-  type FacetDraftRouteDependencies,
-} from "./facets/facet-draft-routes.js";
-import {
-  registerFacetValidationRoutes,
-  type FacetValidationRouteDependencies,
-} from "./facets/facet-validation-routes.js";
-import {
-  registerFacetPublicationRoutes,
-  type FacetPublicationRouteDependencies,
-} from "./facets/facet-publication-routes.js";
-import {
-  registerEndpointConfigRoutes,
-  type EndpointConfigRouteDependencies,
-} from "./facets/endpoint-config-routes.js";
-import {
-  registerImportRoutes,
-  type ImportRouteDependencies,
-} from "./imports/import-routes.js";
-import {
-  registerProviderRoutes,
-  type ProviderRouteDependencies,
-} from "./providers/provider-routes.js";
 import {
   registerActorPreviewRoutes,
   type ActorPreviewRouteDependencies,
@@ -41,7 +20,32 @@ import {
   registerDemoPayerRoutes,
   type DemoPayerAllowance,
 } from "./facets/demo-payer-authorization.js";
-import type { IdentityAuthenticator } from "./auth/types.js";
+import {
+  registerEndpointConfigRoutes,
+  type EndpointConfigRouteDependencies,
+} from "./facets/endpoint-config-routes.js";
+import {
+  registerFacetDraftRoutes,
+  type FacetDraftRouteDependencies,
+} from "./facets/facet-draft-routes.js";
+import {
+  registerFacetPublicationRoutes,
+  type FacetPublicationRouteDependencies,
+} from "./facets/facet-publication-routes.js";
+import {
+  registerFacetValidationRoutes,
+  type FacetValidationRouteDependencies,
+} from "./facets/facet-validation-routes.js";
+import { registerPublicCatalogRoutes } from "./facets/public-catalog-routes.js";
+import type { PublicCatalog } from "./facets/public-catalog.js";
+import {
+  registerImportRoutes,
+  type ImportRouteDependencies,
+} from "./imports/import-routes.js";
+import {
+  registerProviderRoutes,
+  type ProviderRouteDependencies,
+} from "./providers/provider-routes.js";
 import type { ProviderStore } from "./providers/provider-types.js";
 import {
   registerSecretRoutes,
@@ -52,6 +56,7 @@ export interface AppDependencies {
   checkDatabase: () => Promise<void>;
   environment: "local" | "preview" | "production";
   webOrigin: string;
+  clerkWebhook?: ClerkWebhookRouteDependencies;
   providerRoutes?: ProviderRouteDependencies;
   actorPreviewRoutes?: ActorPreviewRouteDependencies;
   demoPayerRoutes?: {
@@ -91,72 +96,6 @@ export async function buildApp(
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   });
-
-  app.get("/health/live", async () => ({
-    service: "control-api",
-    status: "ok" as const,
-    environment: dependencies.environment,
-    timestamp: new Date().toISOString(),
-  }));
-
-  app.get("/health/ready", async (_request, reply) => {
-    try {
-      await dependencies.checkDatabase();
-      return {
-        service: "control-api",
-        status: "ok" as const,
-        environment: dependencies.environment,
-        timestamp: new Date().toISOString(),
-      };
-    } catch {
-      return reply.code(503).send({
-        service: "control-api",
-        status: "degraded" as const,
-        environment: dependencies.environment,
-        timestamp: new Date().toISOString(),
-      });
-    }
-  });
-
-  if (dependencies.providerRoutes) {
-    await registerProviderRoutes(app, dependencies.providerRoutes);
-  }
-  if (dependencies.actorPreviewRoutes) {
-    await registerActorPreviewRoutes(app, dependencies.actorPreviewRoutes);
-  }
-  if (dependencies.demoPayerRoutes) {
-    await registerDemoPayerRoutes(app, dependencies.demoPayerRoutes);
-  }
-  if (dependencies.importRoutes) {
-    await registerImportRoutes(app, dependencies.importRoutes);
-  }
-  if (dependencies.facetDraftRoutes) {
-    await registerFacetDraftRoutes(app, dependencies.facetDraftRoutes);
-  }
-  if (dependencies.actorAgentRoutes) {
-    await registerActorAgentRoutes(app, dependencies.actorAgentRoutes);
-  }
-  if (dependencies.secretRoutes) {
-    await registerSecretRoutes(app, dependencies.secretRoutes);
-  }
-  if (dependencies.endpointConfigRoutes) {
-    await registerEndpointConfigRoutes(app, dependencies.endpointConfigRoutes);
-  }
-  if (dependencies.facetValidationRoutes) {
-    await registerFacetValidationRoutes(
-      app,
-      dependencies.facetValidationRoutes,
-    );
-  }
-  if (dependencies.facetPublicationRoutes) {
-    await registerFacetPublicationRoutes(
-      app,
-      dependencies.facetPublicationRoutes,
-    );
-  }
-  if (dependencies.publicCatalog) {
-    await registerPublicCatalogRoutes(app, dependencies.publicCatalog);
-  }
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof AppError) {
@@ -206,6 +145,75 @@ export async function buildApp(
       },
     });
   });
+
+  app.get("/health/live", async () => ({
+    service: "control-api",
+    status: "ok" as const,
+    environment: dependencies.environment,
+    timestamp: new Date().toISOString(),
+  }));
+
+  app.get("/health/ready", async (_request, reply) => {
+    try {
+      await dependencies.checkDatabase();
+      return {
+        service: "control-api",
+        status: "ok" as const,
+        environment: dependencies.environment,
+        timestamp: new Date().toISOString(),
+      };
+    } catch {
+      return reply.code(503).send({
+        service: "control-api",
+        status: "degraded" as const,
+        environment: dependencies.environment,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  });
+
+  if (dependencies.clerkWebhook) {
+    await registerClerkWebhookRoutes(app, dependencies.clerkWebhook);
+  }
+  if (dependencies.providerRoutes) {
+    await registerProviderRoutes(app, dependencies.providerRoutes);
+  }
+  if (dependencies.actorPreviewRoutes) {
+    await registerActorPreviewRoutes(app, dependencies.actorPreviewRoutes);
+  }
+  if (dependencies.demoPayerRoutes) {
+    await registerDemoPayerRoutes(app, dependencies.demoPayerRoutes);
+  }
+  if (dependencies.importRoutes) {
+    await registerImportRoutes(app, dependencies.importRoutes);
+  }
+  if (dependencies.facetDraftRoutes) {
+    await registerFacetDraftRoutes(app, dependencies.facetDraftRoutes);
+  }
+  if (dependencies.actorAgentRoutes) {
+    await registerActorAgentRoutes(app, dependencies.actorAgentRoutes);
+  }
+  if (dependencies.secretRoutes) {
+    await registerSecretRoutes(app, dependencies.secretRoutes);
+  }
+  if (dependencies.endpointConfigRoutes) {
+    await registerEndpointConfigRoutes(app, dependencies.endpointConfigRoutes);
+  }
+  if (dependencies.facetValidationRoutes) {
+    await registerFacetValidationRoutes(
+      app,
+      dependencies.facetValidationRoutes,
+    );
+  }
+  if (dependencies.facetPublicationRoutes) {
+    await registerFacetPublicationRoutes(
+      app,
+      dependencies.facetPublicationRoutes,
+    );
+  }
+  if (dependencies.publicCatalog) {
+    await registerPublicCatalogRoutes(app, dependencies.publicCatalog);
+  }
 
   return app;
 }

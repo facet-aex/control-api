@@ -35,14 +35,26 @@ try {
 }
 
 const config = readConfig();
+if (
+  config.FACET_ENV === "production" &&
+  config.FACET_AUTH_MODE === "clerk" &&
+  !config.CLERK_WEBHOOK_SIGNING_SECRET
+) {
+  throw new Error(
+    "Production Clerk server requires CLERK_WEBHOOK_SIGNING_SECRET",
+  );
+}
 const database = createDatabase(config.DATABASE_URL);
-const providerService = new ProviderService(
-  new PostgresProviderStore(database.db),
-  { environment: config.FACET_ENV, challengeDomain: config.WEB_ORIGIN },
+const providerStore = new PostgresProviderStore(database.db);
+const providerService = new ProviderService(providerStore, {
+  environment: config.FACET_ENV,
+  challengeDomain: config.WEB_ORIGIN,
+});
+const authenticator = createAuthenticator(config, (clerkId) =>
+  providerStore.findUserByClerkId(clerkId),
 );
-const authenticator = createAuthenticator(config);
 const importService = new ImportService(
-  new PostgresProviderStore(database.db),
+  providerStore,
   new PostgresImportStore(database.db),
   new LocalObjectStore(config.FACET_OBJECT_ROOT),
   {
@@ -56,7 +68,7 @@ const importService = new ImportService(
   },
 );
 const facetDraftService = new FacetDraftService(
-  new PostgresProviderStore(database.db),
+  providerStore,
   new PostgresFacetDraftStore(database.db),
 );
 const registryVerifier = config.FACET_ACTOR_REGISTRY_ADDRESS
@@ -66,32 +78,40 @@ const registryVerifier = config.FACET_ACTOR_REGISTRY_ADDRESS
     )
   : undefined;
 const actorAgentService = new ActorAgentService(
-  new PostgresProviderStore(database.db),
+  providerStore,
   new PostgresActorAgentStore(database.db),
   registryVerifier,
   { environment: config.FACET_ENV, publicBaseUrl: config.WEB_ORIGIN },
 );
 const secretService = new SecretService(
-  new PostgresProviderStore(database.db),
+  providerStore,
   new PostgresSecretStore(database.db),
   new LocalSecretValueStore(config.FACET_SECRET_ROOT),
 );
 const endpointConfigService = new EndpointConfigService(
-  new PostgresProviderStore(database.db),
+  providerStore,
   new PostgresEndpointConfigStore(database.db),
 );
 const facetValidationService = new FacetValidationService(
-  new PostgresProviderStore(database.db),
+  providerStore,
   new PostgresFacetValidationStore(database.db),
 );
 const facetPublicationService = new FacetPublicationService(
-  new PostgresProviderStore(database.db),
+  providerStore,
   new PostgresFacetPublicationStore(database.db),
 );
 const app = await buildApp({
   checkDatabase: () => database.check(),
   environment: config.FACET_ENV,
   webOrigin: config.WEB_ORIGIN,
+  ...(config.CLERK_WEBHOOK_SIGNING_SECRET
+    ? {
+        clerkWebhook: {
+          signingSecret: config.CLERK_WEBHOOK_SIGNING_SECRET,
+          store: providerStore,
+        },
+      }
+    : {}),
   providerRoutes: {
     authenticator,
     service: providerService,
@@ -100,7 +120,7 @@ const app = await buildApp({
     ? {
         actorPreviewRoutes: {
           authenticator,
-          providers: new PostgresProviderStore(database.db),
+          providers: providerStore,
           consumeQuota: (userId: string, now: Date) =>
             new PostgresActorPreviewQuota(database.db).consume(userId, now),
           execute: createActorPreviewExecutor(
@@ -125,7 +145,7 @@ const app = await buildApp({
   },
   demoPayerRoutes: {
     authenticator,
-    providers: new PostgresProviderStore(database.db),
+    providers: providerStore,
     allowance: new PostgresDemoPayerAllowance(database.pool),
   },
   secretRoutes: {
@@ -144,7 +164,10 @@ const app = await buildApp({
     authenticator,
     service: facetPublicationService,
   },
-  publicCatalog: new PostgresPublicCatalog(database.db),
+  publicCatalog: new PostgresPublicCatalog(
+    database.db,
+    config.FACET_RUNNER_OCI_DIGEST,
+  ),
 });
 
 const shutdown = async (signal: string) => {

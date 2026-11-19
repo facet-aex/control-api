@@ -1,376 +1,509 @@
 import { createHash } from "node:crypto";
 
-import { Ajv2020 } from "ajv/dist/2020.js";
-import { getAddress } from "viem";
-
 import type { AuthenticatedIdentity } from "../auth/types.js";
 import { AppError } from "../errors.js";
-import { requireProviderPermission } from "../providers/provider-rbac.js";
-import type { ProviderStore } from "../providers/provider-types.js";
 import {
-  ACTOR_RUNNER_IMAGE,
-  DEFAULT_ERC8004_REGISTRY,
-  DEFAULT_PAY_TO,
-  type ActorAgentStore,
-  type CreateActorCommand,
-  type CreateAgentFacetCommand,
-} from "./actor-agent-types.js";
-import type { RegistryVerifier } from "./fuji-registry-verifier.js";
+  isValidFacetName,
+  isValidSemver,
+  isValidUsername,
+} from "../identifiers.js";
+import type { ProviderStore } from "../providers/provider-types.js";
 import { hashFacetManifest } from "./facet-manifest.js";
+import type { RegistryVerifier } from "./fuji-registry-verifier.js";
+import type {
+  ActorAgentStore,
+  PublishActorCommand,
+  PublishAgentFacetCommand,
+} from "./actor-agent-types.js";
 
-const schemaAjv = new Ajv2020({
-  allErrors: true,
-  allowUnionTypes: true,
-  strict: false,
-  validateFormats: false,
-});
+export const FUSD_ADDRESS = "0xe7082a54a456dc4dfe0ceadcd0d0dce7d8ba176f";
+export const DEMO_LOCAL_PAY_TO = "0x9265c1c87fC5fb3C72Dc68b4D3A005dE1E22C3cf";
+export const DEFAULT_ERC8004_REGISTRY =
+  "0x8004A818BFB912233c491871b3d84c89A494BD9e";
+export const AVALANCHE_FUJI_CHAIN_ID = 43113;
+
+export const ACTOR_RUNNER_IMAGE = "facet/node-actor-runner:1.0";
 
 export function computeActorImageDigest(code: string): string {
-  const hex = createHash("sha256")
-    .update(`${ACTOR_RUNNER_IMAGE}\n${code.trim()}`, "utf8")
+  const hash = createHash("sha256")
+    .update(`${ACTOR_RUNNER_IMAGE}\n${code.trim()}`)
     .digest("hex");
-  return `sha256:${hex}`;
+  return `sha256:${hash}`;
 }
 
-function assertValidJsonSchema(
-  schema: Record<string, unknown>,
-  label: string,
-): void {
-  try {
-    schemaAjv.compile(schema);
-  } catch {
+export function validateActorCode(code: string): void {
+  if (!/export\s+default\s+(?:async\s+)?function(?:\s+run)?\s*\(/u.test(code)) {
     throw new AppError(
-      "INPUT_INVALID",
-      `${label} is not a valid JSON Schema 2020-12 object.`,
+      "VALIDATION_FAILED",
+      "Actor code must export default async function run(input).",
       400,
     );
   }
 }
 
-function assertValidActorCode(code: string): void {
-  const trimmed = code.trim();
+export function validateInputSchema(schema: Record<string, unknown>): void {
+  if (schema.type !== "object") {
+    throw new AppError(
+      "VALIDATION_FAILED",
+      "Actor inputSchema must have type 'object'.",
+      400,
+    );
+  }
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>).sort(
+    ([a], [b]) => a.localeCompare(b),
+  );
+  return `{${entries
+    .filter(([, v]) => v !== undefined)
+    .map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`)
+    .join(",")}}`;
+}
+
+function resolvePayout(
+  environment: "local" | "preview" | "production",
+  verifiedWalletAddress: string | null,
+  requestedPayTo: string | undefined,
+): string {
+  if (environment === "local") {
+    return requestedPayTo ?? verifiedWalletAddress ?? DEMO_LOCAL_PAY_TO;
+  }
+  if (!verifiedWalletAddress) {
+    throw new AppError(
+      "FORBIDDEN",
+      "A verified payout wallet is required before publishing in this environment.",
+      403,
+    );
+  }
   if (
-    !/(export\s+default\b|export\s+(?:async\s+)?function\s+run\b)/u.test(
-      trimmed,
-    )
+    requestedPayTo &&
+    requestedPayTo.toLowerCase() !== verifiedWalletAddress.toLowerCase()
   ) {
     throw new AppError(
-      "INPUT_INVALID",
-      "Actor code must export a default function or a named `run(input)` function.",
-      400,
+      "FORBIDDEN",
+      "payTo must match the authenticated user's verified payout wallet.",
+      403,
     );
   }
+  return verifiedWalletAddress;
 }
 
 export class ActorAgentService {
   constructor(
     private readonly providers: ProviderStore,
     private readonly store: ActorAgentStore,
-    private readonly registryVerifier: RegistryVerifier | undefined,
+    private readonly verifier: RegistryVerifier | undefined,
     private readonly options: {
       environment: "local" | "preview" | "production";
       publicBaseUrl?: string;
-    },
+    } = { environment: "local" },
   ) {}
 
   async listMyActors(identity: AuthenticatedIdentity) {
     const actor = await this.providers.upsertUser(identity);
-    return { actors: await this.store.listMyActors(actor.id) };
+    if (actor.status !== "active") {
+      throw new AppError("FORBIDDEN", "User account is disabled.", 403);
+    }
+    const actors = await this.store.listMyActors(actor.id);
+    return { actors };
   }
 
   async getActorPublishStatus(
     identity: AuthenticatedIdentity,
-    facetId: string,
+    provider: string,
+    facetName: string,
+    version: string,
   ) {
+    if (
+      !isValidUsername(provider) ||
+      !isValidFacetName(facetName) ||
+      !isValidSemver(version)
+    ) {
+      throw new AppError(
+        "VALIDATION_FAILED",
+        "Invalid provider, facetName, or version.",
+        422,
+      );
+    }
     const actor = await this.providers.upsertUser(identity);
-    const status = await this.store.getActorPublishStatus(facetId);
-    if (!status)
-      throw new AppError("RESOURCE_NOT_FOUND", "Actor not found.", 404);
-    const role = await this.providers.getMembershipRole(
-      status.providerId,
-      actor.id,
+    if (actor.status !== "active") {
+      throw new AppError("FORBIDDEN", "User account is disabled.", 403);
+    }
+    if (actor.username !== provider) {
+      throw new AppError(
+        "FORBIDDEN",
+        "Authenticated user does not own this provider namespace.",
+        403,
+      );
+    }
+    const record = await this.store.getActorPublishStatus(
+      provider,
+      facetName,
+      version,
     );
-    requireProviderPermission(role, "provider:read-private");
+    if (!record || record.providerId !== actor.id) {
+      throw new AppError("RESOURCE_NOT_FOUND", "Actor version not found.", 404);
+    }
     return {
-      facetId: status.facetId,
-      versionId: status.versionId,
-      ...(status.fullName ? { fullName: status.fullName } : {}),
-      ...(status.displayVersion
-        ? { displayVersion: status.displayVersion }
+      provider: record.provider,
+      facetName: record.facetName,
+      version: record.version,
+      status: record.status,
+      ...(record.registryTxHash
+        ? { registryTxHash: record.registryTxHash }
         : {}),
-      status: status.status,
-      ...(status.registryTxHash
-        ? { registryTxHash: status.registryTxHash }
-        : {}),
-      ...(status.errorCode ? { errorCode: status.errorCode } : {}),
+      ...(record.errorCode ? { errorCode: record.errorCode } : {}),
     };
   }
 
   async publishActor(
     identity: AuthenticatedIdentity,
-    command: CreateActorCommand,
+    command: PublishActorCommand,
     requestId: string,
     idempotencyKey?: string,
   ) {
-    assertValidJsonSchema(command.inputSchema, "inputSchema");
-    if (command.outputSchema) {
-      assertValidJsonSchema(command.outputSchema, "outputSchema");
+    const version = command.version ?? "1.0.0";
+    if (!isValidFacetName(command.facetName) || !isValidSemver(version)) {
+      throw new AppError(
+        "VALIDATION_FAILED",
+        "Invalid facetName or SemVer version.",
+        400,
+      );
     }
-    assertValidActorCode(command.code);
-
-    const pending = this.options.environment !== "local";
-    if (pending) {
-      if (!idempotencyKey || idempotencyKey.length > 128) {
-        throw new AppError(
-          "IDEMPOTENCY_KEY_REQUIRED",
-          "A bounded Idempotency-Key is required.",
-          400,
-        );
-      }
-      if (
-        command.registryTxHash ||
-        (command.pricingModel && command.pricingModel !== "PAY_PER_RUN") ||
-        (command.priceAtomic && command.priceAtomic !== "1000")
-      ) {
-        throw new AppError(
-          "INPUT_INVALID",
-          "New Actor publication uses managed Fuji registration and PAY_PER_RUN at 1000 atomic fUSD.",
-          400,
-        );
-      }
-    }
+    validateInputSchema(command.inputSchema);
+    validateActorCode(command.code);
 
     const actor = await this.providers.upsertUser(identity);
-    const role = await this.providers.getMembershipRole(
-      command.providerId,
-      actor.id,
+    if (actor.status !== "active") {
+      throw new AppError("FORBIDDEN", "User account is disabled.", 403);
+    }
+
+    const payTo = resolvePayout(
+      this.options.environment,
+      actor.walletAddress,
+      command.payTo,
     );
-    requireProviderPermission(role, "facet:write");
-
-    const provider = await this.providers.getProvider(command.providerId);
-    if (!provider) {
-      throw new AppError("RESOURCE_NOT_FOUND", "Provider not found.", 404);
-    }
-
-    if (this.options.environment !== "local") {
-      if (!provider.walletAddress || !provider.walletVerifiedAt) {
-        throw new AppError(
-          "WALLET_PROOF_REQUIRED",
-          "Link a verified payout wallet before publishing an Actor.",
-          403,
-        );
-      }
-      if (
-        command.payTo &&
-        getAddress(command.payTo) !== getAddress(provider.walletAddress)
-      ) {
-        throw new AppError(
-          "PAYOUT_MISMATCH",
-          "Actor payout must match the verified provider wallet.",
-          403,
-        );
-      }
-    }
-    const payTo =
-      this.options.environment === "local"
-        ? (command.payTo ?? provider.walletAddress ?? DEFAULT_PAY_TO)
-        : provider.walletAddress!;
+    const pricingModel = command.pricingModel ?? "PAY_PER_RUN";
+    const priceAtomic = command.priceAtomic ?? "1000";
     const imageDigest = computeActorImageDigest(command.code);
-    const codeSha256 = createHash("sha256")
-      .update(command.code.trim(), "utf8")
+    const pending = this.options.environment !== "local";
+    const visibility = pending ? "PRIVATE" : "PUBLIC";
+
+    const manifest = {
+      schemaVersion: "facet.manifest/v1",
+      providerId: actor.id,
+      provider: actor.username,
+      facetName: command.facetName,
+      facetDisplayName: command.facetDisplayName,
+      version,
+      type: "ACTOR" as const,
+      summary: command.summary ?? command.description.slice(0, 280),
+      description: command.description,
+      category: command.category,
+      tags: command.tags ?? [],
+      visibility,
+      operation: {
+        operationId: "run",
+        method: "POST" as const,
+        publicPathTemplate: `/v1/facets/${actor.username}/${command.facetName}/versions/${version}/invoke`,
+        inputSchema: command.inputSchema,
+        outputSchema: command.outputSchema ?? { type: "object" },
+        errorSchema: { type: "object" },
+        sideEffectClass: "READ_ONLY" as const,
+      },
+      executionPolicy: {
+        timeoutMs: 15_000,
+        maxResponseBytes: 1_048_576,
+        redirectPolicy: "DENY" as const,
+      },
+      upstreamAuth: {
+        kind: "NONE" as const,
+        configured: true,
+      },
+      pricing: {
+        model: pricingModel,
+        priceAtomic,
+        assetAddress: FUSD_ADDRESS,
+        chainId: AVALANCHE_FUJI_CHAIN_ID,
+        payTo,
+      },
+      actorConfig: {
+        runtime: "node-22-esm",
+        entrypoint: "run",
+        imageDigest,
+      },
+      provenance: {
+        sourceType: "ACTOR_TEMPLATE" as const,
+        sourceOperationPointer: "#/run",
+      },
+    };
+
+    const contentHash = hashFacetManifest(manifest);
+    const publicOrigin = new URL(
+      this.options.publicBaseUrl ?? "https://facet.example",
+    ).origin;
+    const schemaUri = `${publicOrigin}/v1/catalog/facets/${encodeURIComponent(actor.username)}/${encodeURIComponent(command.facetName)}/versions/${encodeURIComponent(version)}`;
+    const requestFingerprint = createHash("sha256")
+      .update(
+        stableStringify({
+          provider: actor.username,
+          facetName: command.facetName,
+          facetDisplayName: command.facetDisplayName,
+          version,
+          summary: command.summary ?? "",
+          description: command.description,
+          category: command.category,
+          tags: command.tags ?? [],
+          inputSchema: command.inputSchema,
+          outputSchema: command.outputSchema ?? null,
+          code: command.code,
+          pricingModel,
+          priceAtomic,
+          payTo,
+        }),
+      )
       .digest("hex");
 
-    let registryVerified = false;
-    if (command.registryTxHash) {
-      if (!command.id) {
-        throw new AppError(
-          "INPUT_INVALID",
-          "Supplying registryTxHash at publish time requires explicit facet `id` matching the on-chain FacetActorRegistry key, or call POST /v1/facets/:facetId/verify-registry after publishing.",
-          400,
-        );
-      }
-      if (this.registryVerifier) {
-        const result = await this.registryVerifier.verifyRegistration(
-          command.registryTxHash,
-          {
-            facetId: command.id,
-            facetType: "HOSTED_ACTOR",
-            imageDigest,
-            pricingModel: command.pricingModel ?? "PAY_PER_RUN",
-            priceAtomic: command.priceAtomic ?? "1000",
-            payTo,
-          },
-        );
-        if (!result.verified) {
-          throw new AppError(
-            "REGISTRY_VERIFICATION_FAILED",
-            result.reason ?? "On-chain FacetActorRegistry verification failed.",
-            400,
-          );
-        }
-        registryVerified = true;
-      }
-    }
-
-    const published = await this.store.publishActor({
+    const record = await this.store.publishActor({
       actorUserId: actor.id,
-      command,
+      providerUsername: actor.username,
+      command: { ...command, version, pricingModel, priceAtomic },
+      manifest,
+      contentHash,
       imageDigest,
-      codeSha256,
       payTo,
-      registryVerified,
-      requestId,
+      registryVerified: false,
       pending,
-      ...(pending
-        ? {
-            idempotencyKey: idempotencyKey!,
-            requestFingerprint: hashFacetManifest({ command, payTo }),
-            ...(this.options.publicBaseUrl
-              ? { publicBaseUrl: this.options.publicBaseUrl }
-              : {}),
-          }
-        : {}),
+      idempotencyKey:
+        idempotencyKey ??
+        `actor:${actor.username}:${command.facetName}:${version}`,
+      requestFingerprint,
+      schemaUri,
+      requestId,
     });
 
+    if (record.status === "REGISTRATION_PENDING") {
+      return {
+        statusCode: 202 as const,
+        body: {
+          facet: {
+            provider: record.provider,
+            facetName: record.facetName,
+            facetDisplayName: record.facetDisplayName,
+            version: record.version,
+            facetType: record.facetType,
+            status: "REGISTRATION_PENDING" as const,
+            visibility: "PRIVATE" as const,
+            imageDigest: record.imageDigest,
+          },
+        },
+      };
+    }
+
     return {
-      ...published,
-      fullName: `${provider.slug}/${published.slug}`,
-      displayVersion: command.displayVersion ?? "1.0.0",
-      ...(published.publishedAt
-        ? { publishedAt: published.publishedAt.toISOString() }
-        : {}),
+      statusCode: 201 as const,
+      body: {
+        facet: {
+          provider: record.provider,
+          facetName: record.facetName,
+          facetDisplayName: record.facetDisplayName,
+          version: record.version,
+          facetType: record.facetType,
+          imageDigest: record.imageDigest,
+          status: "PUBLISHED" as const,
+          visibility: record.visibility,
+          publishedAt: (record.publishedAt ?? new Date()).toISOString(),
+        },
+      },
     };
   }
 
   async publishAgentFacet(
     identity: AuthenticatedIdentity,
-    command: CreateAgentFacetCommand,
+    command: PublishAgentFacetCommand,
     requestId: string,
   ) {
-    assertValidJsonSchema(command.inputSchema, "inputSchema");
-    if (command.outputSchema) {
-      assertValidJsonSchema(command.outputSchema, "outputSchema");
+    const version = command.version ?? "1.0.0";
+    if (!isValidFacetName(command.facetName) || !isValidSemver(version)) {
+      throw new AppError(
+        "VALIDATION_FAILED",
+        "Invalid facetName or SemVer version.",
+        400,
+      );
     }
+    validateInputSchema(command.inputSchema);
 
     const actor = await this.providers.upsertUser(identity);
-    const role = await this.providers.getMembershipRole(
-      command.providerId,
-      actor.id,
+    if (actor.status !== "active") {
+      throw new AppError("FORBIDDEN", "User account is disabled.", 403);
+    }
+
+    const payTo = resolvePayout(
+      this.options.environment,
+      actor.walletAddress,
+      command.payTo,
     );
-    requireProviderPermission(role, "facet:write");
-
-    const provider = await this.providers.getProvider(command.providerId);
-    if (!provider) {
-      throw new AppError("RESOURCE_NOT_FOUND", "Provider not found.", 404);
-    }
-
-    const payTo = command.payTo ?? provider.walletAddress ?? DEFAULT_PAY_TO;
+    const pricingModel = command.pricingModel ?? "PAY_PER_RUN";
+    const priceAtomic = command.priceAtomic ?? "1000";
     const erc8004Registry = command.erc8004Registry ?? DEFAULT_ERC8004_REGISTRY;
-    const codeSha256 = createHash("sha256")
-      .update(
-        (
-          command.code ?? `${command.taskKind}:${command.erc8004TokenId}`
-        ).trim(),
-        "utf8",
-      )
-      .digest("hex");
 
-    let registryVerified = false;
-    if (command.registryTxHash) {
-      if (!command.id) {
-        throw new AppError(
-          "INPUT_INVALID",
-          "Supplying registryTxHash at publish time requires explicit facet `id` matching the on-chain FacetActorRegistry key, or call POST /v1/facets/:facetId/verify-registry after publishing.",
-          400,
-        );
-      }
-      if (this.registryVerifier) {
-        const result = await this.registryVerifier.verifyRegistration(
-          command.registryTxHash,
-          {
-            facetId: command.id,
-            facetType: "AUTONOMOUS_AGENT",
-            pricingModel: command.pricingModel ?? "PAY_PER_RUN",
-            priceAtomic: command.priceAtomic ?? "1000",
-            payTo,
-            erc8004TokenId: command.erc8004TokenId,
-          },
-        );
-        if (!result.verified) {
-          throw new AppError(
-            "REGISTRY_VERIFICATION_FAILED",
-            result.reason ?? "On-chain FacetActorRegistry verification failed.",
-            400,
-          );
-        }
-        registryVerified = true;
-      }
-    }
+    const manifest = {
+      schemaVersion: "facet.manifest/v1",
+      providerId: actor.id,
+      provider: actor.username,
+      facetName: command.facetName,
+      facetDisplayName: command.facetDisplayName,
+      version,
+      type: "AGENT" as const,
+      summary: command.summary ?? command.description.slice(0, 280),
+      description: command.description,
+      category: command.category,
+      tags: command.tags ?? [],
+      visibility: "PUBLIC" as const,
+      operation: {
+        operationId: "delegate",
+        method: "POST" as const,
+        publicPathTemplate: `/v1/facets/${actor.username}/${command.facetName}/versions/${version}/invoke`,
+        inputSchema: command.inputSchema,
+        outputSchema: command.outputSchema ?? { type: "object" },
+        errorSchema: { type: "object" },
+        sideEffectClass: "READ_ONLY" as const,
+      },
+      executionPolicy: {
+        timeoutMs: 30_000,
+        maxResponseBytes: 1_048_576,
+        redirectPolicy: "DENY" as const,
+      },
+      upstreamAuth: {
+        kind: "NONE" as const,
+        configured: true,
+      },
+      pricing: {
+        model: pricingModel,
+        priceAtomic,
+        assetAddress: FUSD_ADDRESS,
+        chainId: AVALANCHE_FUJI_CHAIN_ID,
+        payTo,
+      },
+      agentConfig: {
+        erc8004ChainId: AVALANCHE_FUJI_CHAIN_ID,
+        erc8004Registry,
+        erc8004TokenId: command.erc8004TokenId,
+        a2aProtocolVersion: "1.0",
+        taskKind: command.taskKind,
+      },
+      provenance: {
+        sourceType: "A2A_AGENT_CARD" as const,
+        sourceOperationPointer: "#/delegate",
+      },
+    };
 
-    const published = await this.store.publishAgentFacet({
+    const contentHash = hashFacetManifest(manifest);
+    const record = await this.store.publishAgentFacet({
       actorUserId: actor.id,
-      command,
+      providerUsername: actor.username,
+      command: { ...command, version, pricingModel, priceAtomic },
+      manifest,
+      contentHash,
       erc8004Registry,
-      codeSha256,
       payTo,
-      registryVerified,
+      registryVerified: false,
       requestId,
     });
 
     return {
-      ...published,
-      publishedAt: published.publishedAt.toISOString(),
+      facet: {
+        provider: record.provider,
+        facetName: record.facetName,
+        facetDisplayName: record.facetDisplayName,
+        version: record.version,
+        facetType: record.facetType,
+        erc8004TokenId: record.erc8004TokenId,
+        erc8004Registry: record.erc8004Registry,
+        status: record.status,
+        visibility: record.visibility,
+        publishedAt: record.publishedAt.toISOString(),
+      },
     };
   }
 
   async verifyRegistry(
     identity: AuthenticatedIdentity,
-    facetId: string,
-    registryTxHash: string,
+    input: {
+      provider: string;
+      facetName: string;
+      version: string;
+      registryTxHash: string;
+    },
     requestId: string,
   ) {
-    if (!this.registryVerifier) {
+    if (
+      !isValidUsername(input.provider) ||
+      !isValidFacetName(input.facetName) ||
+      !isValidSemver(input.version)
+    ) {
       throw new AppError(
-        "REGISTRY_VERIFIER_UNCONFIGURED",
-        "Fuji FacetActorRegistry verification is not configured on this Control API instance.",
-        503,
+        "VALIDATION_FAILED",
+        "Invalid provider, facetName, or version.",
+        422,
       );
     }
 
     const actor = await this.providers.upsertUser(identity);
-    const context = await this.store.getPublishedRegistryContext(facetId);
-    if (!context) {
+    if (actor.status !== "active") {
+      throw new AppError("FORBIDDEN", "User account is disabled.", 403);
+    }
+    if (actor.username !== input.provider) {
       throw new AppError(
-        "RESOURCE_NOT_FOUND",
-        "Published Facet not found.",
-        404,
+        "FORBIDDEN",
+        "Authenticated user does not own this provider namespace.",
+        403,
       );
     }
 
-    const role = await this.providers.getMembershipRole(
-      context.providerId,
-      actor.id,
+    const context = await this.store.getPublishedRegistryContextByName(
+      input.provider,
+      input.facetName,
+      input.version,
     );
-    requireProviderPermission(role, "facet:write");
+    if (!context || context.providerId !== actor.id) {
+      throw new AppError("RESOURCE_NOT_FOUND", "Facet version not found.", 404);
+    }
 
-    const verification = await this.registryVerifier.verifyRegistration(
-      registryTxHash,
+    if (!this.verifier) {
+      throw new AppError(
+        "SERVICE_UNAVAILABLE",
+        "Registry verifier is not configured.",
+        503,
+      );
+    }
+
+    const verified = await this.verifier.verifyRegistration(
+      input.registryTxHash,
       {
         facetId: context.facetId,
+        versionId: context.versionId,
         facetType: context.facetType,
-        imageDigest: context.imageDigest,
+        ...(context.imageDigest ? { imageDigest: context.imageDigest } : {}),
         pricingModel: context.pricingModel,
         priceAtomic: context.priceAtomic,
-        payTo: context.payTo,
-        erc8004TokenId: context.erc8004TokenId,
+        payTo: context.payTo ?? "",
+        ...(context.erc8004TokenId
+          ? { erc8004TokenId: context.erc8004TokenId }
+          : {}),
       },
     );
-
-    if (!verification.verified) {
+    if (!verified.verified) {
       throw new AppError(
-        "REGISTRY_VERIFICATION_FAILED",
-        verification.reason ??
-          "On-chain FacetActorRegistry verification failed.",
+        "VALIDATION_FAILED",
+        verified.reason ?? "Registry transaction verification failed.",
         400,
       );
     }
@@ -380,14 +513,15 @@ export class ActorAgentService {
       facetId: context.facetId,
       versionId: context.versionId,
       providerId: context.providerId,
-      registryTxHash,
+      registryTxHash: input.registryTxHash,
       requestId,
     });
 
     return {
-      facetId: context.facetId,
-      versionId: context.versionId,
-      registryTxHash,
+      provider: input.provider,
+      facetName: input.facetName,
+      version: input.version,
+      registryTxHash: input.registryTxHash,
       registryVerified: true,
     };
   }
