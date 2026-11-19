@@ -1,4 +1,5 @@
 import { AppError } from "../errors.js";
+import { isValidUsername } from "../identifiers.js";
 import type {
   AuthenticatedIdentity,
   AuthenticationInput,
@@ -26,16 +27,17 @@ export class LocalAuthenticator implements IdentityAuthenticator {
         400,
       );
     }
+    if (!isValidUsername(subject)) {
+      throw new AppError(
+        "USERNAME_REQUIRED",
+        "Use an 8-16 character lowercase hyphenated kebab-case username.",
+        409,
+      );
+    }
 
     return {
       subject: `local:${subject}`,
-      ...(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(subject)
-        ? { username: subject }
-        : {}),
-      ...(input.devEmail ? { email: input.devEmail.trim().toLowerCase() } : {}),
-      ...(input.devDisplayName
-        ? { displayName: input.devDisplayName.trim() }
-        : {}),
+      username: subject,
     };
   }
 }

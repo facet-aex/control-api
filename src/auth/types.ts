@@ -1,15 +1,11 @@
 export interface AuthenticatedIdentity {
   subject: string;
   username?: string;
-  email?: string;
-  displayName?: string;
 }
 
 export interface AuthenticationInput {
   authorization?: string | undefined;
   devUser?: string | undefined;
-  devEmail?: string | undefined;
-  devDisplayName?: string | undefined;
 }
 
 export interface IdentityAuthenticator {

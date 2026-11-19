@@ -1,17 +1,27 @@
 import { createClerkClient, verifyToken } from "@clerk/backend";
 
 import { AppError } from "../errors.js";
+import { isValidUsername } from "../identifiers.js";
 import type {
   AuthenticatedIdentity,
   AuthenticationInput,
   IdentityAuthenticator,
 } from "./types.js";
 
+export interface SyncedUserLookup {
+  clerkId: string;
+  username: string;
+  status: "active" | "disabled";
+}
+
 export interface ClerkAuthenticatorOptions {
   authorizedParties: string[];
   issuer?: string;
   jwtKey?: string;
   secretKey?: string;
+  findUserByClerkId?: (
+    clerkId: string,
+  ) => Promise<SyncedUserLookup | undefined>;
 }
 
 export class ClerkAuthenticator implements IdentityAuthenticator {
@@ -55,7 +65,36 @@ export class ClerkAuthenticator implements IdentityAuthenticator {
         401,
       );
     }
-    if (!this.clerkClient) return { subject };
+
+    if (this.options.findUserByClerkId) {
+      const synced = await this.options.findUserByClerkId(subject);
+      if (synced) {
+        if (synced.status === "disabled") {
+          throw new AppError(
+            "AUTHORIZATION_DENIED",
+            "This FACET user is disabled.",
+            403,
+          );
+        }
+        if (!isValidUsername(synced.username)) {
+          throw new AppError(
+            "USERNAME_REQUIRED",
+            "Set an 8-16 character lowercase kebab-case username in Clerk.",
+            409,
+          );
+        }
+        return { subject, username: synced.username };
+      }
+    }
+
+    if (!this.clerkClient) {
+      throw new AppError(
+        "USERNAME_REQUIRED",
+        "Set an 8-16 character lowercase kebab-case username in Clerk.",
+        409,
+      );
+    }
+
     let user;
     try {
       user = await this.clerkClient.users.getUser(subject);
@@ -66,16 +105,15 @@ export class ClerkAuthenticator implements IdentityAuthenticator {
         503,
       );
     }
-    if (!user.username || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(user.username)) {
+
+    if (!user.username || !isValidUsername(user.username)) {
       throw new AppError(
         "USERNAME_REQUIRED",
-        "Set a lowercase username using letters, numbers and hyphens in Clerk.",
+        "Set an 8-16 character lowercase kebab-case username in Clerk.",
         409,
       );
     }
-    const displayName =
-      [user.firstName, user.lastName].filter(Boolean).join(" ") ||
-      user.username;
-    return { subject, username: user.username, displayName };
+
+    return { subject, username: user.username };
   }
 }

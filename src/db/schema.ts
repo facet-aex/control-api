@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -23,14 +24,7 @@ const timestamps = {
     .notNull(),
 };
 
-export const providerRole = pgEnum("provider_role", [
-  "owner",
-  "admin",
-  "developer",
-  "viewer",
-]);
 export const userStatus = pgEnum("user_status", ["active", "disabled"]);
-export const providerStatus = pgEnum("provider_status", ["active", "disabled"]);
 export const facetStatus = pgEnum("facet_status", [
   "draft",
   "published",
@@ -43,11 +37,7 @@ export const facetVersionStatus = pgEnum("facet_version_status", [
   "published",
   "disabled",
 ]);
-export const facetType = pgEnum("facet_type", [
-  "external_http_api",
-  "hosted_actor",
-  "autonomous_agent",
-]);
+export const facetType = pgEnum("facet_type", ["API", "ACTOR", "AGENT"]);
 export const facetVisibility = pgEnum("facet_visibility", [
   "private",
   "unlisted",
@@ -90,46 +80,27 @@ export const users = pgTable(
     id: uuid("id")
       .default(sql`uuidv7()`)
       .primaryKey(),
-    externalSubject: text("external_subject").notNull(),
-    username: text("username"),
-    email: text("email"),
-    displayName: text("display_name"),
+    clerkId: text("clerk_id").notNull(),
+    username: text("username").notNull(),
+    walletAddress: text("wallet_address"),
+    walletVerifiedAt: timestamp("wallet_verified_at", { withTimezone: true }),
     status: userStatus("status").notNull().default("active"),
     ...timestamps,
   },
   (table) => [
-    uniqueIndex("users_external_subject_uidx").on(table.externalSubject),
+    uniqueIndex("users_clerk_id_uidx").on(table.clerkId),
     uniqueIndex("users_username_uidx").on(table.username),
+    check(
+      "users_username_format_chk",
+      sql`char_length(${table.username}) between 8 and 16 and ${table.username} ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$'`,
+    ),
   ],
-);
-
-export const providers = pgTable(
-  "providers",
-  {
-    id: uuid("id")
-      .default(sql`uuidv7()`)
-      .primaryKey(),
-    slug: text("slug").notNull(),
-    name: text("name").notNull(),
-    description: text("description").notNull().default(""),
-    websiteUrl: text("website_url"),
-    contact: text("contact"),
-    walletAddress: text("wallet_address"),
-    walletVerifiedAt: timestamp("wallet_verified_at", { withTimezone: true }),
-    status: providerStatus("status").notNull().default("active"),
-    version: integer("version").notNull().default(1),
-    ...timestamps,
-  },
-  (table) => [uniqueIndex("providers_slug_uidx").on(table.slug)],
 );
 
 export const walletLinkChallenges = pgTable(
   "wallet_link_challenges",
   {
     id: uuid("id").primaryKey(),
-    providerId: uuid("provider_id")
-      .notNull()
-      .references(() => providers.id, { onDelete: "cascade" }),
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
@@ -141,12 +112,7 @@ export const walletLinkChallenges = pgTable(
       .defaultNow()
       .notNull(),
   },
-  (table) => [
-    index("wallet_link_challenges_provider_user_idx").on(
-      table.providerId,
-      table.userId,
-    ),
-  ],
+  (table) => [index("wallet_link_challenges_user_idx").on(table.userId)],
 );
 
 export const actorPreviewUsage = pgTable(
@@ -188,29 +154,6 @@ export const demoPayerAuthorizations = pgTable(
   ],
 );
 
-export const providerMemberships = pgTable(
-  "provider_memberships",
-  {
-    providerId: uuid("provider_id")
-      .notNull()
-      .references(() => providers.id, { onDelete: "cascade" }),
-    userId: uuid("user_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
-    role: providerRole("role").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true })
-      .defaultNow()
-      .notNull(),
-    updatedAt: timestamp("updated_at", { withTimezone: true })
-      .defaultNow()
-      .notNull(),
-  },
-  (table) => [
-    primaryKey({ columns: [table.providerId, table.userId] }),
-    index("provider_memberships_user_idx").on(table.userId),
-  ],
-);
-
 export const apiSources = pgTable(
   "api_sources",
   {
@@ -219,12 +162,12 @@ export const apiSources = pgTable(
       .primaryKey(),
     providerId: uuid("provider_id")
       .notNull()
-      .references(() => providers.id, { onDelete: "restrict" }),
+      .references(() => users.id, { onDelete: "restrict" }),
     name: text("name").notNull(),
     sourceKind: apiSourceKind("source_kind").notNull(),
     sourceUrl: text("source_url"),
     status: apiSourceStatus("status").notNull().default("active"),
-    version: integer("version").notNull().default(1),
+    revision: integer("revision").notNull().default(1),
     ...timestamps,
   },
   (table) => [
@@ -273,7 +216,7 @@ export const openApiImportJobs = pgTable(
       .primaryKey(),
     providerId: uuid("provider_id")
       .notNull()
-      .references(() => providers.id, { onDelete: "restrict" }),
+      .references(() => users.id, { onDelete: "restrict" }),
     apiSourceId: uuid("api_source_id")
       .notNull()
       .references(() => apiSources.id, { onDelete: "restrict" }),
@@ -342,10 +285,10 @@ export const facets = pgTable(
       .primaryKey(),
     providerId: uuid("provider_id")
       .notNull()
-      .references(() => providers.id, { onDelete: "restrict" }),
-    type: facetType("type").notNull().default("external_http_api"),
-    slug: text("slug").notNull(),
-    name: text("name").notNull(),
+      .references(() => users.id, { onDelete: "restrict" }),
+    type: facetType("type").notNull().default("API"),
+    facetName: text("facet_name").notNull(),
+    facetDisplayName: text("facet_display_name").notNull(),
     description: text("description").notNull().default(""),
     category: text("category").notNull(),
     tags: text("tags")
@@ -358,11 +301,14 @@ export const facets = pgTable(
       (): AnyPgColumn => facetVersions.id,
       { onDelete: "restrict" },
     ),
-    version: integer("version").notNull().default(1),
+    revision: integer("revision").notNull().default(1),
     ...timestamps,
   },
   (table) => [
-    uniqueIndex("facets_provider_slug_uidx").on(table.providerId, table.slug),
+    uniqueIndex("facets_provider_facet_name_uidx").on(
+      table.providerId,
+      table.facetName,
+    ),
     index("facets_status_idx").on(table.status),
   ],
 );
@@ -375,7 +321,7 @@ export const secretRefs = pgTable(
       .primaryKey(),
     providerId: uuid("provider_id")
       .notNull()
-      .references(() => providers.id, { onDelete: "restrict" }),
+      .references(() => users.id, { onDelete: "restrict" }),
     kind: secretKind("kind").notNull(),
     label: text("label").notNull(),
     vaultProvider: text("vault_provider").notNull(),
@@ -400,7 +346,7 @@ export const endpointConfigs = pgTable(
       .primaryKey(),
     providerId: uuid("provider_id")
       .notNull()
-      .references(() => providers.id, { onDelete: "restrict" }),
+      .references(() => users.id, { onDelete: "restrict" }),
     protectedBaseUrl: text("protected_base_url").notNull(),
     method: text("method").notNull(),
     pathTemplate: text("path_template").notNull(),
@@ -415,7 +361,7 @@ export const endpointConfigs = pgTable(
     maxResponseBytes: integer("max_response_bytes").notNull(),
     redirectPolicy: endpointRedirectPolicy("redirect_policy").notNull(),
     egressPolicyId: text("egress_policy_id").notNull(),
-    version: integer("version").notNull().default(1),
+    revision: integer("revision").notNull().default(1),
     ...timestamps,
   },
   (table) => [
@@ -433,7 +379,7 @@ export const facetVersions = pgTable(
     facetId: uuid("facet_id")
       .notNull()
       .references(() => facets.id, { onDelete: "restrict" }),
-    displayVersion: text("version").notNull(),
+    version: text("version").notNull(),
     status: facetVersionStatus("status").notNull().default("draft"),
     sourceVersionId: uuid("source_version_id")
       .notNull()
@@ -473,7 +419,7 @@ export const facetVersions = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
-    version: integer("revision").notNull().default(1),
+    revision: integer("revision").notNull().default(1),
     publishedAt: timestamp("published_at", { withTimezone: true }),
     publishedBy: uuid("published_by").references(() => users.id, {
       onDelete: "restrict",
@@ -482,7 +428,7 @@ export const facetVersions = pgTable(
   (table) => [
     uniqueIndex("facet_versions_facet_version_uidx").on(
       table.facetId,
-      table.displayVersion,
+      table.version,
     ),
     uniqueIndex("facet_versions_facet_hash_uidx").on(
       table.facetId,
@@ -503,7 +449,7 @@ export const actorRegistrationJobs = pgTable(
       .references(() => facets.id, { onDelete: "cascade" }),
     providerId: uuid("provider_id")
       .notNull()
-      .references(() => providers.id, { onDelete: "cascade" }),
+      .references(() => users.id, { onDelete: "cascade" }),
     idempotencyKey: text("idempotency_key").notNull(),
     requestFingerprint: text("request_fingerprint").notNull(),
     schemaUri: text("schema_uri").notNull(),
@@ -537,7 +483,7 @@ export const auditEvents = pgTable(
     actorUserId: uuid("actor_user_id").references(() => users.id, {
       onDelete: "set null",
     }),
-    providerId: uuid("provider_id").references(() => providers.id, {
+    providerId: uuid("provider_id").references(() => users.id, {
       onDelete: "set null",
     }),
     eventType: text("event_type").notNull(),

@@ -3,11 +3,12 @@ import { describe, expect, it } from "vitest";
 import { readConfig } from "../src/config.js";
 
 describe("authentication configuration", () => {
-  it("requires an internal executor token and fixed Docker service URL in production", () => {
+  it("requires an internal executor token, Clerk webhook secret, and fixed Docker service URL in production", () => {
     const base = {
       FACET_ENV: "production",
       FACET_AUTH_MODE: "clerk",
       CLERK_SECRET_KEY: "test-key",
+      CLERK_WEBHOOK_SIGNING_SECRET: "whsec_testsecret",
       DATABASE_URL: "postgresql://user:password@localhost:5432/facet",
       FACET_IMPORTER_URL: "http://openapi-importer:4010",
       FACET_IMPORTER_ALLOW_PRIVATE_HTTP: "1",
@@ -20,14 +21,15 @@ describe("authentication configuration", () => {
         FACET_EXECUTOR_URL: "http://evil.example:4030",
       }),
     ).toThrow("FACET_EXECUTOR_URL");
-    expect(
-      readConfig({
-        ...base,
-        FACET_EXECUTOR_TOKEN: "a".repeat(32),
-        FACET_EXECUTOR_URL: "http://executor:4030",
-      }).FACET_EXECUTOR_URL,
-    ).toBe("http://executor:4030");
+    const valid = readConfig({
+      ...base,
+      FACET_EXECUTOR_TOKEN: "a".repeat(32),
+      FACET_EXECUTOR_URL: "http://executor:4030",
+    });
+    expect(valid.FACET_EXECUTOR_URL).toBe("http://executor:4030");
+    expect(valid.CLERK_WEBHOOK_SIGNING_SECRET).toBe("whsec_testsecret");
   });
+
   it("rejects local header auth outside the local environment", () => {
     expect(() =>
       readConfig({
@@ -56,11 +58,13 @@ describe("authentication configuration", () => {
       CLERK_SECRET_KEY: "",
       CLERK_JWT_KEY: "",
       CLERK_JWT_ISSUER: "",
+      CLERK_WEBHOOK_SIGNING_SECRET: "",
     });
 
     expect(config.CLERK_SECRET_KEY).toBeUndefined();
     expect(config.CLERK_JWT_KEY).toBeUndefined();
     expect(config.CLERK_JWT_ISSUER).toBeUndefined();
+    expect(config.CLERK_WEBHOOK_SIGNING_SECRET).toBeUndefined();
     expect(config.FACET_OBJECT_ROOT).toBe(".facet-data/objects");
     expect(config.FACET_SECRET_ROOT).toBe(".facet-data/secrets");
     expect(config.FACET_IMPORT_MAX_DOCUMENT_BYTES).toBe(5_242_880);

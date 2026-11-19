@@ -89,6 +89,7 @@ const environmentSchema = z.object({
   CLERK_SECRET_KEY: optionalNonEmptyString,
   CLERK_JWT_KEY: optionalNonEmptyString,
   CLERK_JWT_ISSUER: optionalUrl,
+  CLERK_WEBHOOK_SIGNING_SECRET: optionalNonEmptyString,
   FACET_FUJI_RPC_URL: z
     .string()
     .url()
@@ -101,6 +102,13 @@ const environmentSchema = z.object({
       .optional(),
   ),
   FACET_REGISTRY_OWNER_PRIVATE_KEY: optionalNonEmptyString,
+  FACET_RUNNER_OCI_DIGEST: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z
+      .string()
+      .regex(/^sha256:[a-f0-9]{64}$/u)
+      .optional(),
+  ),
 });
 
 export type AppConfig = z.infer<typeof environmentSchema>;
