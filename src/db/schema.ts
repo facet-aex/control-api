@@ -537,3 +537,26 @@ export const outboxEvents = pgTable(
     ),
   ],
 );
+
+export const faucetClaims = pgTable(
+  "faucet_claims",
+  {
+    id: uuid("id")
+      .default(sql`uuidv7()`)
+      .primaryKey(),
+    recipientAddress: text("recipient_address").notNull(),
+    ipHash: text("ip_hash").notNull(),
+    amountAtomic: text("amount_atomic").notNull(),
+    txHash: text("tx_hash").notNull(),
+    claimedAt: timestamp("claimed_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index("faucet_claims_recipient_claimed_idx").on(
+      table.recipientAddress,
+      table.claimedAt,
+    ),
+    index("faucet_claims_ip_claimed_idx").on(table.ipHash, table.claimedAt),
+  ],
+);

@@ -36,6 +36,10 @@ import {
   registerFacetValidationRoutes,
   type FacetValidationRouteDependencies,
 } from "./facets/facet-validation-routes.js";
+import {
+  registerFaucetRoutes,
+  type FaucetRouteDependencies,
+} from "./faucet/faucet-routes.js";
 import { registerPublicCatalogRoutes } from "./facets/public-catalog-routes.js";
 import type { PublicCatalog } from "./facets/public-catalog.js";
 import {
@@ -72,6 +76,7 @@ export interface AppDependencies {
   facetValidationRoutes?: FacetValidationRouteDependencies;
   facetPublicationRoutes?: FacetPublicationRouteDependencies;
   publicCatalog?: PublicCatalog;
+  faucetRoutes?: FaucetRouteDependencies;
 }
 
 function hasErrorCode(error: unknown, code: string): boolean {
@@ -213,6 +218,9 @@ export async function buildApp(
   }
   if (dependencies.publicCatalog) {
     await registerPublicCatalogRoutes(app, dependencies.publicCatalog);
+  }
+  if (dependencies.faucetRoutes) {
+    await registerFaucetRoutes(app, dependencies.faucetRoutes);
   }
 
   return app;

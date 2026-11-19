@@ -109,6 +109,41 @@ const environmentSchema = z.object({
       .regex(/^sha256:[a-f0-9]{64}$/u)
       .optional(),
   ),
+  FACET_FUSD_MINTER_PRIVATE_KEY: z.preprocess(
+    (value) =>
+      typeof value === "string" && value.trim() === "" ? undefined : value,
+    z
+      .string()
+      .regex(/^0x[a-fA-F0-9]{64}$/u)
+      .optional(),
+  ),
+  FACET_USD_ADDRESS: z.preprocess(
+    (value) =>
+      typeof value === "string" && value.trim() === "" ? undefined : value,
+    z
+      .string()
+      .regex(/^0x[a-fA-F0-9]{40}$/u)
+      .default("0xe7082a54a456dc4dfe0ceadcd0d0dce7d8ba176f"),
+  ),
+  FACET_FAUCET_DRIP_ATOMIC: z.preprocess(
+    (value) =>
+      typeof value === "string" && value.trim() === "" ? undefined : value,
+    z
+      .string()
+      .regex(/^[1-9][0-9]*$/u)
+      .default("1000000"),
+  ),
+  FACET_FAUCET_ADDRESS_COOLDOWN_SEC: z.preprocess(
+    (value) =>
+      typeof value === "string" && value.trim() === "" ? undefined : value,
+    z.coerce.number().int().min(1).max(604_800).default(86_400),
+  ),
+  FACET_FAUCET_IP_DAILY_LIMIT: z.preprocess(
+    (value) =>
+      typeof value === "string" && value.trim() === "" ? undefined : value,
+    z.coerce.number().int().min(1).max(1_000).default(10),
+  ),
+  FACET_FAUCET_IP_HASH_SALT: optionalNonEmptyString,
 });
 
 export type AppConfig = z.infer<typeof environmentSchema>;

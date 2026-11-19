@@ -19,6 +19,8 @@ import { PostgresFacetValidationStore } from "./facets/postgres-facet-validation
 import { PostgresFacetDraftStore } from "./facets/postgres-facet-draft-store.js";
 import { PostgresFacetPublicationStore } from "./facets/postgres-facet-publication-store.js";
 import { PostgresPublicCatalog } from "./facets/public-catalog.js";
+import { FujiFusdMinter } from "./faucet/faucet-minter.js";
+import { FaucetService, PostgresFaucetStore } from "./faucet/faucet-service.js";
 import { ImportService } from "./imports/import-service.js";
 import { PostgresImportStore } from "./imports/postgres-import-store.js";
 import { PostgresProviderStore } from "./providers/postgres-provider-store.js";
@@ -100,6 +102,23 @@ const facetPublicationService = new FacetPublicationService(
   providerStore,
   new PostgresFacetPublicationStore(database.db),
 );
+const faucetMinter = config.FACET_FUSD_MINTER_PRIVATE_KEY
+  ? new FujiFusdMinter(
+      config.FACET_FUJI_RPC_URL,
+      config.FACET_USD_ADDRESS,
+      config.FACET_FUSD_MINTER_PRIVATE_KEY,
+    )
+  : undefined;
+const faucetService = new FaucetService(
+  new PostgresFaucetStore(database.pool),
+  faucetMinter,
+  {
+    dripAtomic: config.FACET_FAUCET_DRIP_ATOMIC,
+    addressCooldownSec: config.FACET_FAUCET_ADDRESS_COOLDOWN_SEC,
+    ipDailyLimit: config.FACET_FAUCET_IP_DAILY_LIMIT,
+    ipHashSalt: config.FACET_FAUCET_IP_HASH_SALT ?? "facet-faucet-v1",
+  },
+);
 const app = await buildApp({
   checkDatabase: () => database.check(),
   environment: config.FACET_ENV,
@@ -168,6 +187,9 @@ const app = await buildApp({
     database.db,
     config.FACET_RUNNER_OCI_DIGEST,
   ),
+  faucetRoutes: {
+    service: faucetService,
+  },
 });
 
 const shutdown = async (signal: string) => {
