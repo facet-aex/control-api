@@ -13,6 +13,7 @@ const listQuerySchema = z.object({
   q: z.string().max(120).optional(),
   limit: z.coerce.number().int().min(1).max(50).optional(),
   type: z.enum(FACET_TYPES).optional(),
+  category: z.string().trim().min(1).max(80).optional(),
 });
 
 const facetParamsSchema = z
@@ -35,12 +36,16 @@ export async function registerPublicCatalogRoutes(
   catalog: PublicCatalog,
 ): Promise<void> {
   app.get("/v1/catalog/facets", async (request) => {
-    const { q, limit, type } = listQuerySchema.parse(request.query);
+    const { q, limit, type, category } = listQuerySchema.parse(request.query);
+    const filters = {
+      ...(type ? { type } : {}),
+      ...(category ? { category } : {}),
+    };
     return {
       facets: await catalog.list(
         q ?? "",
         limit ?? 20,
-        type ? { type } : undefined,
+        Object.keys(filters).length > 0 ? filters : undefined,
       ),
     };
   });

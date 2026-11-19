@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, notInArray } from "drizzle-orm";
 import type { Database } from "../db/client.js";
 import { facets, facetVersions, users } from "../db/schema.js";
 import type { FacetType, PricingModel } from "../identifiers.js";
@@ -8,6 +8,10 @@ import {
   DEMO_LOCAL_PAY_TO,
   FUSD_ADDRESS,
 } from "./actor-agent-service.js";
+import {
+  ALL_NAMED_CATEGORY_SLUGS,
+  NAMED_CATEGORY_SLUGS_BY_TYPE,
+} from "./categories.js";
 
 export type { FacetType, PricingModel };
 
@@ -187,7 +191,14 @@ export class PostgresPublicCatalog implements PublicCatalog {
       conditions.push(eq(facets.type, filters.type));
     }
     if (filters?.category) {
-      conditions.push(eq(facets.category, filters.category));
+      if (filters.category === "others") {
+        const excluded = filters.type
+          ? NAMED_CATEGORY_SLUGS_BY_TYPE[filters.type]
+          : ALL_NAMED_CATEGORY_SLUGS;
+        conditions.push(notInArray(facets.category, [...excluded]));
+      } else {
+        conditions.push(eq(facets.category, filters.category));
+      }
     }
     return and(...conditions);
   }

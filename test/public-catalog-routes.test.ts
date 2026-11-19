@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import type {
+  CatalogListFilters,
   PublicCatalog,
   PublicFacet,
 } from "../src/facets/public-catalog.js";
@@ -36,6 +37,13 @@ const facetV2: PublicFacet = {
 const catalog: PublicCatalog = {
   async list(query, limit, filters) {
     if (filters?.type && filters.type !== facetV2.facetType) return [];
+    if (
+      filters?.category &&
+      filters.category !== "data" &&
+      filters.category !== "others"
+    ) {
+      return [];
+    }
     return query === "Weather" && limit === 1 ? [facetV2] : [];
   },
   async getByName(provider, facetName, version) {
@@ -63,6 +71,36 @@ describe("public catalog Option B routes", () => {
     });
     expect(list.statusCode).toBe(200);
     expect(list.json()).toEqual({ facets: [facetV2] });
+
+    const seenFilters: Array<CatalogListFilters | undefined> = [];
+    const categorySpyCatalog: PublicCatalog = {
+      async list(_query, _limit, filters) {
+        seenFilters.push(filters);
+        return [facetV2];
+      },
+      getByName: catalog.getByName,
+    };
+    const spyApp = await buildApp({
+      checkDatabase: async () => {},
+      environment: "local",
+      webOrigin: "http://localhost:3000",
+      publicCatalog: categorySpyCatalog,
+    });
+    const byCategory = await spyApp.inject({
+      method: "GET",
+      url: "/v1/catalog/facets?q=Weather&limit=1&type=API&category=data",
+    });
+    expect(byCategory.statusCode).toBe(200);
+    const byOthers = await spyApp.inject({
+      method: "GET",
+      url: "/v1/catalog/facets?type=ACTOR&category=others",
+    });
+    expect(byOthers.statusCode).toBe(200);
+    expect(seenFilters).toEqual([
+      { type: "API", category: "data" },
+      { type: "ACTOR", category: "others" },
+    ]);
+    await spyApp.close();
 
     const latestDetail = await app.inject({
       method: "GET",

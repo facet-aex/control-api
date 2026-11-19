@@ -1,4 +1,8 @@
 import { describe, expect, it } from "vitest";
+import {
+  ALL_NAMED_CATEGORY_SLUGS,
+  FACET_CATEGORY_SLUGS_BY_TYPE,
+} from "../src/facets/categories.js";
 import { relevance, searchTerms } from "../src/facets/public-catalog.js";
 
 describe("catalog intent search", () => {
@@ -54,5 +58,33 @@ describe("catalog intent search", () => {
     expect(
       relevance(customActor, searchTerms("dữ liệu chứng khoán")),
     ).toBeGreaterThan(0);
+  });
+
+  it("defines 6 synced categories per FacetType ending with others", () => {
+    expect(FACET_CATEGORY_SLUGS_BY_TYPE.API).toEqual([
+      "data",
+      "social",
+      "finance",
+      "ai",
+      "developer-tools",
+      "others",
+    ]);
+    expect(FACET_CATEGORY_SLUGS_BY_TYPE.ACTOR).toEqual([
+      "web-scraping",
+      "vietnamese-data",
+      "data-processing",
+      "ecommerce",
+      "social",
+      "others",
+    ]);
+    expect(FACET_CATEGORY_SLUGS_BY_TYPE.AGENT).toEqual([
+      "a2a-agents",
+      "market-analysis",
+      "research",
+      "defi",
+      "automation",
+      "others",
+    ]);
+    expect(ALL_NAMED_CATEGORY_SLUGS).not.toContain("others");
   });
 });
