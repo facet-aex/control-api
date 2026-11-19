@@ -149,7 +149,7 @@ jobs:
           exec 9>/tmp/facet-deploy.lock
           flock -w 300 9
           run_docker compose -f docker-compose.prod.yml pull control-api control-worker
-          run_docker compose -f docker-compose.prod.yml run --rm --no-deps control-api node dist/db/migrate.js
+          run_docker compose -f docker-compose.prod.yml run --rm --no-deps -T control-api node dist/db/migrate.js </dev/null
           run_docker compose -f docker-compose.prod.yml up -d --no-deps control-api control-worker
           run_docker image prune -f >/dev/null 2>&1 || true
           run_docker compose -f docker-compose.prod.yml ps --status running control-api control-worker
