@@ -1,10 +1,9 @@
 import { randomUUID } from "node:crypto";
 
 import { AppError } from "../src/errors.js";
+import { isValidUsername } from "../src/identifiers.js";
 import type {
-  ProviderMembershipRecord,
-  ProviderRecord,
-  ProviderRole,
+  ClerkWebhookUserEvent,
   ProviderStore,
   UserRecord,
   WalletLinkChallenge,
@@ -16,71 +15,158 @@ export class InMemoryProviderStore implements ProviderStore {
     providerId: string;
     requestId: string;
   }> = [];
-  private readonly memberships = new Map<string, ProviderRole>();
-  private readonly providers = new Map<string, ProviderRecord>();
   private readonly walletChallenges = new Map<string, WalletLinkChallenge>();
-  private readonly users = new Map<string, UserRecord>();
-  private readonly usersById = new Map<string, UserRecord>();
+  private readonly usersByClerkId = new Map<string, UserRecord>();
+  private readonly usersByUsername = new Map<string, UserRecord>();
+
+  async findUserByClerkId(clerkId: string): Promise<UserRecord | undefined> {
+    return this.usersByClerkId.get(clerkId);
+  }
+
+  async findUserByUsername(username: string): Promise<UserRecord | undefined> {
+    return this.usersByUsername.get(username);
+  }
 
   async upsertUser(
     identity: Parameters<ProviderStore["upsertUser"]>[0],
   ): Promise<UserRecord> {
-    const existing = this.users.get(identity.subject);
-    if (existing) return existing;
-    const user: UserRecord = {
-      id: randomUUID(),
-      externalSubject: identity.subject,
-      username: identity.username ?? null,
-      email: identity.email ?? null,
-      displayName: identity.displayName ?? null,
-      status: "active",
-    };
-    this.users.set(identity.subject, user);
-    this.usersById.set(user.id, user);
-    return user;
-  }
+    const existing = this.usersByClerkId.get(identity.subject);
+    if (existing) {
+      if (existing.status === "disabled") {
+        throw new AppError(
+          "AUTHORIZATION_DENIED",
+          "This FACET user is disabled.",
+          403,
+        );
+      }
+      if (identity.username && identity.username !== existing.username) {
+        if (!isValidUsername(identity.username)) {
+          throw new AppError(
+            "USERNAME_REQUIRED",
+            "Set an 8-16 character lowercase kebab-case username.",
+            409,
+          );
+        }
+        const conflict = this.usersByUsername.get(identity.username);
+        if (conflict && conflict.id !== existing.id) {
+          throw new AppError(
+            "RESOURCE_CONFLICT",
+            "A user with this username already exists.",
+            409,
+          );
+        }
+        this.usersByUsername.delete(existing.username);
+        existing.username = identity.username;
+        existing.updatedAt = new Date();
+        this.usersByUsername.set(existing.username, existing);
+      }
+      return existing;
+    }
 
-  async createProvider(
-    input: Parameters<ProviderStore["createProvider"]>[0],
-  ): Promise<ProviderRecord> {
-    if (
-      [...this.providers.values()].some(
-        (provider) => provider.slug === input.provider.slug,
-      )
-    ) {
+    if (!identity.username || !isValidUsername(identity.username)) {
       throw new AppError(
-        "RESOURCE_CONFLICT",
-        "A provider with this slug already exists.",
+        "USERNAME_REQUIRED",
+        "Set an 8-16 character lowercase kebab-case username.",
         409,
       );
     }
+    if (this.usersByUsername.has(identity.username)) {
+      throw new AppError(
+        "RESOURCE_CONFLICT",
+        "A user with this username already exists.",
+        409,
+      );
+    }
+
     const now = new Date("2026-11-09T00:00:00.000Z");
-    const provider: ProviderRecord = {
+    const user: UserRecord = {
       id: randomUUID(),
-      slug: input.provider.slug,
-      name: input.provider.name,
-      description: input.provider.description,
-      websiteUrl: input.provider.websiteUrl ?? null,
-      contact: input.provider.contact ?? null,
-      walletAddress: input.provider.walletAddress ?? null,
+      clerkId: identity.subject,
+      username: identity.username,
+      walletAddress: null,
       walletVerifiedAt: null,
       status: "active",
-      version: 1,
       createdAt: now,
       updatedAt: now,
     };
-    this.providers.set(provider.id, provider);
-    this.memberships.set(`${provider.id}:${input.actorUserId}`, "owner");
-    this.auditEvents.push({
-      eventType: "provider.created",
-      providerId: provider.id,
-      requestId: input.requestId,
-    });
-    return provider;
+    this.usersByClerkId.set(user.clerkId, user);
+    this.usersByUsername.set(user.username, user);
+    return user;
   }
 
-  async getProvider(providerId: string): Promise<ProviderRecord | undefined> {
-    return this.providers.get(providerId);
+  async applyClerkWebhook(
+    event: ClerkWebhookUserEvent,
+    requestId = "webhook:clerk",
+  ): Promise<void> {
+    if (event.type === "user.deleted") {
+      const existing = this.usersByClerkId.get(event.data.id);
+      if (!existing) return;
+      existing.status = "disabled";
+      existing.updatedAt = new Date();
+      this.auditEvents.push({
+        eventType: "user.webhook.deleted",
+        providerId: existing.id,
+        requestId,
+      });
+      return;
+    }
+
+    const username = event.data.username;
+    if (!isValidUsername(username)) {
+      throw new AppError(
+        "INVALID_USERNAME",
+        "Clerk webhook user must have an 8-16 character lowercase hyphenated kebab-case username.",
+        422,
+      );
+    }
+    const existing = this.usersByClerkId.get(event.data.id);
+    const conflict = this.usersByUsername.get(username);
+    if (conflict && conflict.id !== existing?.id) {
+      throw new AppError(
+        "RESOURCE_CONFLICT",
+        "A user with this username already exists.",
+        409,
+      );
+    }
+
+    const now = new Date();
+    if (existing) {
+      this.usersByUsername.delete(existing.username);
+      existing.username = username;
+      existing.status = "active";
+      existing.updatedAt = now;
+      this.usersByUsername.set(username, existing);
+      this.auditEvents.push({
+        eventType:
+          event.type === "user.created"
+            ? "user.webhook.created"
+            : "user.webhook.updated",
+        providerId: existing.id,
+        requestId,
+      });
+      return;
+    }
+
+    const created: UserRecord = {
+      id: randomUUID(),
+      clerkId: event.data.id,
+      username,
+      walletAddress: null,
+      walletVerifiedAt: null,
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.usersByClerkId.set(created.clerkId, created);
+    this.usersByUsername.set(created.username, created);
+    this.auditEvents.push({
+      eventType:
+        event.type === "user.created"
+          ? "user.webhook.created"
+          : "user.webhook.updated",
+      providerId: created.id,
+      requestId,
+    });
   }
 
   async createWalletLinkChallenge(
@@ -97,220 +183,30 @@ export class InMemoryProviderStore implements ProviderStore {
 
   async consumeWalletLinkChallenge(
     input: Parameters<ProviderStore["consumeWalletLinkChallenge"]>[0],
-  ): Promise<ProviderRecord | undefined> {
+  ): Promise<UserRecord | undefined> {
     const challenge = this.walletChallenges.get(input.challengeId);
-    const provider = this.providers.get(input.providerId);
+    const user = [...this.usersByClerkId.values()].find(
+      (candidate) => candidate.id === input.userId,
+    );
     if (
       !challenge ||
-      !provider ||
+      !user ||
+      user.status !== "active" ||
       challenge.consumedAt ||
-      challenge.providerId !== input.providerId ||
       challenge.userId !== input.userId ||
       challenge.expiresAt.getTime() <= input.now.getTime()
-    )
-      return undefined;
-    challenge.consumedAt = input.now;
-    provider.walletAddress = input.walletAddress;
-    provider.walletVerifiedAt = input.now;
-    provider.version += 1;
-    provider.updatedAt = input.now;
-    return provider;
-  }
-
-  async getMembershipRole(
-    providerId: string,
-    userId: string,
-  ): Promise<ProviderRole | undefined> {
-    return this.memberships.get(`${providerId}:${userId}`);
-  }
-
-  async listMemberships(
-    providerId: string,
-  ): Promise<ProviderMembershipRecord[]> {
-    const result: ProviderMembershipRecord[] = [];
-    for (const [key, role] of this.memberships) {
-      const [membershipProviderId, userId] = key.split(":");
-      if (membershipProviderId !== providerId || !userId) continue;
-      const user = this.usersById.get(userId);
-      if (!user) continue;
-      result.push({
-        user: {
-          id: user.id,
-          email: user.email,
-          displayName: user.displayName,
-        },
-        role,
-        createdAt: new Date("2026-11-09T00:00:00.000Z"),
-        updatedAt: new Date("2026-11-09T00:00:00.000Z"),
-      });
-    }
-    return result.sort((left, right) =>
-      left.user.id.localeCompare(right.user.id),
-    );
-  }
-
-  async setMembership(
-    input: Parameters<ProviderStore["setMembership"]>[0],
-  ): Promise<ProviderMembershipRecord> {
-    if (!this.providers.has(input.providerId)) {
-      throw new AppError("RESOURCE_NOT_FOUND", "Provider not found.", 404);
-    }
-    const actorRole = this.memberships.get(
-      `${input.providerId}:${input.actorUserId}`,
-    );
-    if (actorRole !== "owner" && actorRole !== "admin") {
-      throw new AppError(
-        "AUTHORIZATION_DENIED",
-        "The authenticated user is not authorized for this provider.",
-        403,
-      );
-    }
-    const targetUser = this.usersById.get(input.targetUserId);
-    if (!targetUser) {
-      throw new AppError("RESOURCE_NOT_FOUND", "User not found.", 404);
-    }
-    const key = `${input.providerId}:${input.targetUserId}`;
-    const existingRole = this.memberships.get(key);
-    if (
-      actorRole !== "owner" &&
-      (input.role === "owner" || existingRole === "owner")
     ) {
-      throw new AppError(
-        "AUTHORIZATION_DENIED",
-        "Only an owner can add or change an owner membership.",
-        403,
-      );
-    }
-    if (existingRole === "owner" && input.role !== "owner") {
-      const ownerCount = [...this.memberships.entries()].filter(
-        ([membershipKey, role]) =>
-          membershipKey.startsWith(`${input.providerId}:`) && role === "owner",
-      ).length;
-      if (ownerCount === 1) {
-        throw new AppError(
-          "FINAL_OWNER_REQUIRED",
-          "A provider must retain at least one owner.",
-          409,
-        );
-      }
-    }
-    if (existingRole !== input.role) {
-      this.memberships.set(key, input.role);
-      this.auditEvents.push({
-        eventType: existingRole
-          ? "provider.membership.role_changed"
-          : "provider.membership.created",
-        providerId: input.providerId,
-        requestId: input.requestId,
-      });
-    }
-    return {
-      user: {
-        id: targetUser.id,
-        email: targetUser.email,
-        displayName: targetUser.displayName,
-      },
-      role: input.role,
-      createdAt: new Date("2026-11-09T00:00:00.000Z"),
-      updatedAt: new Date("2026-11-09T00:01:00.000Z"),
-    };
-  }
-
-  async removeMembership(
-    input: Parameters<ProviderStore["removeMembership"]>[0],
-  ): Promise<void> {
-    if (!this.providers.has(input.providerId)) {
-      throw new AppError("RESOURCE_NOT_FOUND", "Provider not found.", 404);
-    }
-    const actorRole = this.memberships.get(
-      `${input.providerId}:${input.actorUserId}`,
-    );
-    if (actorRole !== "owner" && actorRole !== "admin") {
-      throw new AppError(
-        "AUTHORIZATION_DENIED",
-        "The authenticated user is not authorized for this provider.",
-        403,
-      );
-    }
-    const key = `${input.providerId}:${input.targetUserId}`;
-    const targetRole = this.memberships.get(key);
-    if (!targetRole) {
-      throw new AppError("RESOURCE_NOT_FOUND", "Membership not found.", 404);
-    }
-    if (actorRole !== "owner" && targetRole === "owner") {
-      throw new AppError(
-        "AUTHORIZATION_DENIED",
-        "Only an owner can remove an owner membership.",
-        403,
-      );
-    }
-    if (targetRole === "owner") {
-      const ownerCount = [...this.memberships.entries()].filter(
-        ([membershipKey, role]) =>
-          membershipKey.startsWith(`${input.providerId}:`) && role === "owner",
-      ).length;
-      if (ownerCount === 1) {
-        throw new AppError(
-          "FINAL_OWNER_REQUIRED",
-          "A provider must retain at least one owner.",
-          409,
-        );
-      }
-    }
-    this.memberships.delete(key);
-    this.auditEvents.push({
-      eventType: "provider.membership.removed",
-      providerId: input.providerId,
-      requestId: input.requestId,
-    });
-  }
-
-  async listProvidersForUser(
-    userId: string,
-  ): Promise<Array<{ provider: ProviderRecord; role: ProviderRole }>> {
-    const result: Array<{ provider: ProviderRecord; role: ProviderRole }> = [];
-    for (const provider of this.providers.values()) {
-      const role = this.memberships.get(`${provider.id}:${userId}`);
-      if (role) result.push({ provider, role });
-    }
-    return result;
-  }
-
-  async updateProvider(
-    input: Parameters<ProviderStore["updateProvider"]>[0],
-  ): Promise<ProviderRecord | undefined> {
-    const provider = this.providers.get(input.providerId);
-    if (!provider || provider.version !== input.expectedVersion)
       return undefined;
-    const updated: ProviderRecord = {
-      ...provider,
-      name: input.patch.name ?? provider.name,
-      description: input.patch.description ?? provider.description,
-      websiteUrl:
-        input.patch.websiteUrl === undefined
-          ? provider.websiteUrl
-          : input.patch.websiteUrl,
-      contact:
-        input.patch.contact === undefined
-          ? provider.contact
-          : input.patch.contact,
-      walletAddress:
-        input.patch.walletAddress === undefined
-          ? provider.walletAddress
-          : input.patch.walletAddress,
-      walletVerifiedAt:
-        input.patch.walletAddress === undefined
-          ? provider.walletVerifiedAt
-          : null,
-      version: provider.version + 1,
-      updatedAt: new Date("2026-11-09T00:01:00.000Z"),
-    };
-    this.providers.set(provider.id, updated);
+    }
+    challenge.consumedAt = input.now;
+    user.walletAddress = input.walletAddress;
+    user.walletVerifiedAt = input.now;
+    user.updatedAt = input.now;
     this.auditEvents.push({
-      eventType: "provider.updated",
-      providerId: provider.id,
+      eventType: "provider.wallet.linked",
+      providerId: user.id,
       requestId: input.requestId,
     });
-    return updated;
+    return user;
   }
 }

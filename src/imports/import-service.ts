@@ -3,7 +3,6 @@ import { Buffer } from "node:buffer";
 import type { AuthenticatedIdentity } from "../auth/types.js";
 import { AppError } from "../errors.js";
 import type { ProviderStore } from "../providers/provider-types.js";
-import { requireProviderPermission } from "../providers/provider-rbac.js";
 import type { ObjectStore } from "../storage/object-store.js";
 import type {
   ImportJobRecord,
@@ -49,17 +48,22 @@ export class ImportService {
     private readonly limits: ImportLimitsSnapshot,
   ) {}
 
+  private requireJobOwner(actorUserId: string, job: ImportJobRecord): void {
+    if (job.providerId !== actorUserId) {
+      throw new AppError(
+        "AUTHORIZATION_DENIED",
+        "The authenticated user is not authorized for this import job.",
+        403,
+      );
+    }
+  }
+
   async create(
     identity: AuthenticatedIdentity,
-    input: { providerId: string; name: string; source: ImportSourceInput },
+    input: { name: string; source: ImportSourceInput },
     requestId: string,
   ) {
     const actor = await this.providers.upsertUser(identity);
-    const role = await this.providers.getMembershipRole(
-      input.providerId,
-      actor.id,
-    );
-    requireProviderPermission(role, "facet:write");
 
     if (
       input.source.kind !== "url" &&
@@ -81,7 +85,7 @@ export class ImportService {
           );
     const job = await this.imports.createImport({
       actorUserId: actor.id,
-      providerId: input.providerId,
+      providerId: actor.id,
       name: input.name,
       source: input.source,
       ...(snapshot
@@ -105,26 +109,20 @@ export class ImportService {
   async get(identity: AuthenticatedIdentity, jobId: string) {
     const actor = await this.providers.upsertUser(identity);
     const job = await this.imports.getImport(jobId);
-    if (!job)
+    if (!job) {
       throw new AppError("RESOURCE_NOT_FOUND", "Import job not found.", 404);
-    const role = await this.providers.getMembershipRole(
-      job.providerId,
-      actor.id,
-    );
-    requireProviderPermission(role, "provider:read-private");
+    }
+    this.requireJobOwner(actor.id, job);
     return toImportJob(job);
   }
 
   async listCandidates(identity: AuthenticatedIdentity, jobId: string) {
     const actor = await this.providers.upsertUser(identity);
     const job = await this.imports.getImport(jobId);
-    if (!job)
+    if (!job) {
       throw new AppError("RESOURCE_NOT_FOUND", "Import job not found.", 404);
-    const role = await this.providers.getMembershipRole(
-      job.providerId,
-      actor.id,
-    );
-    requireProviderPermission(role, "provider:read-private");
+    }
+    this.requireJobOwner(actor.id, job);
     return (await this.imports.listCandidates(jobId)).map(toOperationCandidate);
   }
 }

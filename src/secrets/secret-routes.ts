@@ -2,9 +2,16 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import type { IdentityAuthenticator } from "../auth/types.js";
+import { isValidUsername } from "../identifiers.js";
 import type { SecretService } from "./secret-service.js";
 
 const idSchema = z.string().uuid();
+const providerParamSchema = z
+  .string()
+  .refine(
+    isValidUsername,
+    "Provider username must be 8-16 character lowercase kebab-case.",
+  );
 const createSchema = z
   .object({
     kind: z.enum(["API_KEY", "BEARER_TOKEN"]),
@@ -41,46 +48,46 @@ export async function registerSecretRoutes(
   app: FastifyInstance,
   dependencies: SecretRouteDependencies,
 ): Promise<void> {
-  app.post("/v1/providers/:providerId/secrets", async (request, reply) => {
-    const { providerId } = z
-      .object({ providerId: idSchema })
+  app.post("/v1/providers/:provider/secrets", async (request, reply) => {
+    const { provider } = z
+      .object({ provider: providerParamSchema })
       .parse(request.params);
     const payload = createSchema.parse(request.body);
     const identity = await authenticate(request, dependencies.authenticator);
     const result = await dependencies.service.create(
       identity,
-      { providerId, ...payload },
+      { provider, ...payload },
       request.id,
     );
     return reply.code(201).send(result);
   });
 
   app.post(
-    "/v1/providers/:providerId/secrets/:secretId/rotate",
+    "/v1/providers/:provider/secrets/:secretId/rotate",
     async (request) => {
-      const { providerId, secretId } = z
-        .object({ providerId: idSchema, secretId: idSchema })
+      const { provider, secretId } = z
+        .object({ provider: providerParamSchema, secretId: idSchema })
         .parse(request.params);
       const payload = rotateSchema.parse(request.body);
       const identity = await authenticate(request, dependencies.authenticator);
       return dependencies.service.rotate(
         identity,
-        { providerId, secretId, value: payload.value },
+        { provider, secretId, value: payload.value },
         request.id,
       );
     },
   );
 
   app.delete(
-    "/v1/providers/:providerId/secrets/:secretId",
+    "/v1/providers/:provider/secrets/:secretId",
     async (request, reply) => {
-      const { providerId, secretId } = z
-        .object({ providerId: idSchema, secretId: idSchema })
+      const { provider, secretId } = z
+        .object({ provider: providerParamSchema, secretId: idSchema })
         .parse(request.params);
       const identity = await authenticate(request, dependencies.authenticator);
       await dependencies.service.revoke(
         identity,
-        { providerId, secretId },
+        { provider, secretId },
         request.id,
       );
       return reply.code(204).send();

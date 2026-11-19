@@ -20,11 +20,12 @@ const sourceSchema = z.discriminatedUnion("kind", [
   }),
   z.object({ kind: z.literal("url"), url: httpsUrlSchema }),
 ]);
-const createImportSchema = z.object({
-  providerId: idSchema,
-  name: z.string().trim().min(1).max(160),
-  source: sourceSchema,
-});
+const createImportSchema = z
+  .object({
+    name: z.string().trim().min(1).max(160),
+    source: sourceSchema,
+  })
+  .strict();
 
 async function authenticate(
   request: FastifyRequest,
@@ -38,12 +39,6 @@ async function authenticate(
       : {}),
     ...(first(request.headers["x-facet-dev-user"])
       ? { devUser: first(request.headers["x-facet-dev-user"]) }
-      : {}),
-    ...(first(request.headers["x-facet-dev-email"])
-      ? { devEmail: first(request.headers["x-facet-dev-email"]) }
-      : {}),
-    ...(first(request.headers["x-facet-dev-display-name"])
-      ? { devDisplayName: first(request.headers["x-facet-dev-display-name"]) }
       : {}),
   });
 }

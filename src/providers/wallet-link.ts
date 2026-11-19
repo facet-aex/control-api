@@ -5,8 +5,8 @@ import { AppError } from "../errors.js";
 import type { WalletLinkChallenge } from "./provider-types.js";
 
 export function newWalletLinkChallenge(input: {
-  providerId: string;
   userId: string;
+  provider: string;
   domain: string;
   now: Date;
 }): Omit<WalletLinkChallenge, "consumedAt"> {
@@ -15,15 +15,13 @@ export function newWalletLinkChallenge(input: {
   const message = [
     "FACET payout wallet link",
     `Domain: ${input.domain}`,
-    `Chain ID: 43113`,
-    `Provider ID: ${input.providerId}`,
-    `User ID: ${input.userId}`,
+    "Chain ID: 43113",
+    `Provider: ${input.provider}`,
     `Nonce: ${nonce}`,
     `Expires At: ${expiresAt.toISOString()}`,
   ].join("\n");
   return {
     id: randomUUID(),
-    providerId: input.providerId,
     userId: input.userId,
     message,
     nonceHash: createHash("sha256").update(nonce).digest("hex"),

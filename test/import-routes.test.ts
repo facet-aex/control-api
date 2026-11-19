@@ -124,25 +124,13 @@ beforeEach(async () => {
 
 afterEach(async () => app.close());
 
-async function createProvider(): Promise<string> {
-  const response = await app.inject({
-    method: "POST",
-    url: "/v1/providers",
-    headers: { "x-facet-dev-user": "alice" },
-    payload: { slug: "import-provider", name: "Import Provider" },
-  });
-  return (response.json().provider as { id: string }).id;
-}
-
-describe("OpenAPI import commands", () => {
-  it("snapshots pasted input and queues an import job", async () => {
-    const providerId = await createProvider();
+describe("OpenAPI import commands (unified user provider)", () => {
+  it("snapshots pasted input and queues an import job for authenticated users.id", async () => {
     const response = await app.inject({
       method: "POST",
       url: "/v1/openapi-imports",
-      headers: { "x-facet-dev-user": "alice" },
+      headers: { "x-facet-dev-user": "alice-labs" },
       payload: {
-        providerId,
         name: "Pasted API",
         source: { kind: "paste", content: "openapi: 3.1.0" },
       },
@@ -150,20 +138,18 @@ describe("OpenAPI import commands", () => {
 
     expect(response.statusCode).toBe(202);
     expect(response.json()).toMatchObject({
-      job: { providerId, status: "queued" },
+      job: { status: "queued" },
     });
     expect(response.json().job.sourceVersionId).toEqual(expect.any(String));
     expect(objects.objects.size).toBe(1);
   });
 
   it("queues URL input without claiming a source snapshot exists", async () => {
-    const providerId = await createProvider();
     const response = await app.inject({
       method: "POST",
       url: "/v1/openapi-imports",
-      headers: { "x-facet-dev-user": "alice" },
+      headers: { "x-facet-dev-user": "alice-labs" },
       payload: {
-        providerId,
         name: "Remote API",
         source: { kind: "url", url: "https://api.example.com/openapi.json" },
       },
@@ -174,46 +160,26 @@ describe("OpenAPI import commands", () => {
     expect(objects.objects.size).toBe(0);
   });
 
-  it("rejects non-HTTPS URL imports before queueing work", async () => {
-    const providerId = await createProvider();
-    const response = await app.inject({
+  it("rejects non-HTTPS URL imports and byte-limit overflows", async () => {
+    const insecure = await app.inject({
       method: "POST",
       url: "/v1/openapi-imports",
-      headers: { "x-facet-dev-user": "alice" },
+      headers: { "x-facet-dev-user": "alice-labs" },
       payload: {
-        providerId,
         name: "Insecure remote API",
         source: { kind: "url", url: "http://api.example.com/openapi.json" },
       },
     });
-
-    expect(response.statusCode).toBe(400);
-    expect(response.json()).toMatchObject({
+    expect(insecure.statusCode).toBe(400);
+    expect(insecure.json()).toMatchObject({
       error: { code: "INPUT_INVALID" },
     });
-    expect(objects.objects.size).toBe(0);
-  });
-
-  it("denies cross-provider creation and enforces the byte limit", async () => {
-    const providerId = await createProvider();
-    const denied = await app.inject({
-      method: "POST",
-      url: "/v1/openapi-imports",
-      headers: { "x-facet-dev-user": "mallory" },
-      payload: {
-        providerId,
-        name: "Unauthorized",
-        source: { kind: "paste", content: "openapi: 3.1.0" },
-      },
-    });
-    expect(denied.statusCode).toBe(403);
 
     const oversized = await app.inject({
       method: "POST",
       url: "/v1/openapi-imports",
-      headers: { "x-facet-dev-user": "alice" },
+      headers: { "x-facet-dev-user": "alice-labs" },
       payload: {
-        providerId,
         name: "Too large",
         source: { kind: "upload", content: "x".repeat(1_001) },
       },
@@ -251,19 +217,11 @@ describe("OpenAPI import commands", () => {
     });
 
     try {
-      const createdProvider = await largeApp.inject({
-        method: "POST",
-        url: "/v1/providers",
-        headers: { "x-facet-dev-user": "large-owner" },
-        payload: { slug: "large-import-provider", name: "Large Import" },
-      });
-      const providerId = createdProvider.json().provider.id as string;
       const response = await largeApp.inject({
         method: "POST",
         url: "/v1/openapi-imports",
         headers: { "x-facet-dev-user": "large-owner" },
         payload: {
-          providerId,
           name: "Large valid transport",
           source: { kind: "paste", content: "x".repeat(1_060_000) },
         },
@@ -277,7 +235,6 @@ describe("OpenAPI import commands", () => {
         url: "/v1/openapi-imports",
         headers: { "x-facet-dev-user": "large-owner" },
         payload: {
-          providerId,
           name: "Transport too large",
           source: { kind: "paste", content: "x".repeat(2_300_000) },
         },
@@ -291,47 +248,29 @@ describe("OpenAPI import commands", () => {
     }
   });
 
-  it("does not expose a provider import job to another user", async () => {
-    const providerId = await createProvider();
+  it("isolates import jobs and candidates to the owning user", async () => {
     const created = await app.inject({
       method: "POST",
       url: "/v1/openapi-imports",
-      headers: { "x-facet-dev-user": "alice" },
+      headers: { "x-facet-dev-user": "alice-labs" },
       payload: {
-        providerId,
         name: "Private import",
         source: { kind: "paste", content: "openapi: 3.1.0" },
       },
     });
     const jobId = created.json().job.id as string;
 
-    const denied = await app.inject({
+    const deniedJob = await app.inject({
       method: "GET",
       url: `/v1/openapi-imports/${jobId}`,
-      headers: { "x-facet-dev-user": "mallory" },
+      headers: { "x-facet-dev-user": "mallory-x" },
     });
-
-    expect(denied.statusCode).toBe(403);
-  });
-
-  it("returns normalized operation candidates only to provider members", async () => {
-    const providerId = await createProvider();
-    const created = await app.inject({
-      method: "POST",
-      url: "/v1/openapi-imports",
-      headers: { "x-facet-dev-user": "alice" },
-      payload: {
-        providerId,
-        name: "Candidate import",
-        source: { kind: "paste", content: "openapi: 3.1.0" },
-      },
-    });
-    const jobId = created.json().job.id as string;
+    expect(deniedJob.statusCode).toBe(403);
 
     const allowed = await app.inject({
       method: "GET",
       url: `/v1/openapi-imports/${jobId}/operations`,
-      headers: { "x-facet-dev-user": "alice" },
+      headers: { "x-facet-dev-user": "alice-labs" },
     });
     expect(allowed.statusCode).toBe(200);
     expect(allowed.json()).toMatchObject({
@@ -346,11 +285,11 @@ describe("OpenAPI import commands", () => {
     expect(JSON.stringify(allowed.json())).not.toContain("objectKey");
     expect(JSON.stringify(allowed.json())).not.toContain("sourceUrl");
 
-    const denied = await app.inject({
+    const deniedOps = await app.inject({
       method: "GET",
       url: `/v1/openapi-imports/${jobId}/operations`,
-      headers: { "x-facet-dev-user": "mallory" },
+      headers: { "x-facet-dev-user": "mallory-x" },
     });
-    expect(denied.statusCode).toBe(403);
+    expect(deniedOps.statusCode).toBe(403);
   });
 });

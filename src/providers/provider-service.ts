@@ -1,63 +1,35 @@
 import { AppError } from "../errors.js";
 import type { AuthenticatedIdentity } from "../auth/types.js";
-import { requireProviderPermission } from "./provider-rbac.js";
+import { isValidUsername } from "../identifiers.js";
 import {
   newWalletLinkChallenge,
   verifyWalletLinkSignature,
 } from "./wallet-link.js";
 import type {
-  CreateProviderInput,
   CurrentUser,
-  ProviderMembership,
-  ProviderRecord,
-  ProviderRole,
   ProviderStore,
   PublicProvider,
-  UpdateProviderInput,
+  UserRecord,
 } from "./provider-types.js";
 
-function toCurrentUser(user: {
-  id: string;
-  username?: string | null;
-  email: string | null;
-  displayName: string | null;
-}): CurrentUser {
+function toCurrentUser(user: UserRecord): CurrentUser {
   return {
-    id: user.id,
-    username: user.username ?? null,
-    email: user.email,
-    displayName: user.displayName,
+    clerkId: user.clerkId,
+    username: user.username,
+    walletAddress: user.walletAddress,
+    walletVerifiedAt: user.walletVerifiedAt?.toISOString() ?? null,
+    status: user.status,
   };
 }
 
-function toProviderMembership(membership: {
-  user: CurrentUser;
-  role: ProviderRole;
-  createdAt: Date;
-  updatedAt: Date;
-}): ProviderMembership {
+function toPublicProvider(user: UserRecord): PublicProvider {
   return {
-    user: membership.user,
-    role: membership.role,
-    createdAt: membership.createdAt.toISOString(),
-    updatedAt: membership.updatedAt.toISOString(),
-  };
-}
-
-function toPublicProvider(provider: ProviderRecord): PublicProvider {
-  return {
-    id: provider.id,
-    slug: provider.slug,
-    name: provider.name,
-    description: provider.description,
-    websiteUrl: provider.websiteUrl,
-    contact: provider.contact,
-    walletAddress: provider.walletAddress,
-    walletVerifiedAt: provider.walletVerifiedAt?.toISOString() ?? null,
-    status: provider.status,
-    version: provider.version,
-    createdAt: provider.createdAt.toISOString(),
-    updatedAt: provider.updatedAt.toISOString(),
+    provider: user.username,
+    walletAddress: user.walletAddress,
+    walletVerifiedAt: user.walletVerifiedAt?.toISOString() ?? null,
+    status: user.status,
+    createdAt: user.createdAt.toISOString(),
+    updatedAt: user.updatedAt.toISOString(),
   };
 }
 
@@ -71,41 +43,59 @@ export class ProviderService {
     },
   ) {}
 
-  private requireWalletProofForCloud(walletAddress: unknown): void {
-    if (this.options.environment !== "local" && walletAddress !== undefined) {
+  private async requireSelf(
+    identity: AuthenticatedIdentity,
+    provider: string,
+  ): Promise<UserRecord> {
+    if (!isValidUsername(provider)) {
       throw new AppError(
-        "WALLET_PROOF_REQUIRED",
-        "Link a payout wallet with a signed challenge.",
+        "INPUT_INVALID",
+        "Provider username must be 8-16 character lowercase kebab-case.",
+        400,
+      );
+    }
+    const actor = await this.store.upsertUser(identity);
+    if (actor.status !== "active") {
+      throw new AppError(
+        "AUTHORIZATION_DENIED",
+        "This FACET user is disabled.",
         403,
       );
     }
-  }
-
-  private async requireOwner(
-    identity: AuthenticatedIdentity,
-    providerId: string,
-  ) {
-    const actor = await this.store.upsertUser(identity);
-    const provider = await this.store.getProvider(providerId);
-    if (!provider || provider.status !== "active") {
-      throw new AppError("RESOURCE_NOT_FOUND", "Provider not found.", 404);
-    }
-    const role = await this.store.getMembershipRole(providerId, actor.id);
-    if (role !== "owner") {
+    if (actor.username !== provider) {
       throw new AppError(
         "AUTHORIZATION_DENIED",
-        "Only a provider owner may link its payout wallet.",
+        "Only the owning provider account may manage its payout wallet.",
         403,
       );
     }
     return actor;
   }
 
+  async getCurrentUser(identity: AuthenticatedIdentity): Promise<CurrentUser> {
+    return toCurrentUser(await this.store.upsertUser(identity));
+  }
+
+  async getPublic(provider: string): Promise<PublicProvider> {
+    if (!isValidUsername(provider)) {
+      throw new AppError(
+        "INPUT_INVALID",
+        "Provider username must be 8-16 character lowercase kebab-case.",
+        400,
+      );
+    }
+    const user = await this.store.findUserByUsername(provider);
+    if (!user || user.status !== "active") {
+      throw new AppError("RESOURCE_NOT_FOUND", "Provider not found.", 404);
+    }
+    return toPublicProvider(user);
+  }
+
   async createWalletLinkChallenge(
     identity: AuthenticatedIdentity,
-    providerId: string,
+    provider: string,
   ) {
-    const actor = await this.requireOwner(identity, providerId);
+    const actor = await this.requireSelf(identity, provider);
     const domain = this.options.challengeDomain ?? "http://localhost:3000";
     if (
       this.options.environment !== "local" &&
@@ -114,8 +104,8 @@ export class ProviderService {
       throw new Error("Cloud wallet challenge domain must use HTTPS");
     }
     const challenge = newWalletLinkChallenge({
-      providerId,
       userId: actor.id,
+      provider: actor.username,
       domain: new URL(domain).origin,
       now: this.options.now?.() ?? new Date(),
     });
@@ -129,18 +119,18 @@ export class ProviderService {
 
   async confirmWalletLink(
     identity: AuthenticatedIdentity,
-    providerId: string,
+    provider: string,
     challengeId: string,
     address: string,
     signature: `0x${string}`,
     requestId: string,
   ) {
-    const actor = await this.requireOwner(identity, providerId);
+    const actor = await this.requireSelf(identity, provider);
     const challenge = await this.store.getWalletLinkChallenge(challengeId);
     if (
       !challenge ||
-      challenge.providerId !== providerId ||
-      challenge.userId !== actor.id
+      challenge.userId !== actor.id ||
+      !challenge.message.includes(`Provider: ${actor.username}\n`)
     ) {
       throw new AppError(
         "WALLET_CHALLENGE_INVALID",
@@ -168,15 +158,14 @@ export class ProviderService {
       address,
       signature,
     });
-    const provider = await this.store.consumeWalletLinkChallenge({
+    const updated = await this.store.consumeWalletLinkChallenge({
       challengeId,
-      providerId,
       userId: actor.id,
       walletAddress,
       now,
       requestId,
     });
-    if (!provider) {
+    if (!updated) {
       throw new AppError(
         "WALLET_CHALLENGE_USED",
         "Wallet challenge already used.",
@@ -184,143 +173,8 @@ export class ProviderService {
       );
     }
     return {
-      walletAddress: provider.walletAddress,
-      verifiedAt: provider.walletVerifiedAt?.toISOString(),
+      walletAddress: updated.walletAddress,
+      verifiedAt: updated.walletVerifiedAt?.toISOString(),
     };
-  }
-
-  async getCurrentUser(identity: AuthenticatedIdentity): Promise<CurrentUser> {
-    return toCurrentUser(await this.store.upsertUser(identity));
-  }
-
-  async create(
-    identity: AuthenticatedIdentity,
-    input: CreateProviderInput,
-    requestId: string,
-  ): Promise<PublicProvider> {
-    this.requireWalletProofForCloud(input.walletAddress);
-    const actor = await this.store.upsertUser(identity);
-    const provider = await this.store.createProvider({
-      actorUserId: actor.id,
-      provider: input,
-      requestId,
-    });
-    return toPublicProvider(provider);
-  }
-
-  async getPublic(providerId: string): Promise<PublicProvider> {
-    const provider = await this.store.getProvider(providerId);
-    if (!provider || provider.status !== "active") {
-      throw new AppError("RESOURCE_NOT_FOUND", "Provider not found.", 404);
-    }
-    return toPublicProvider(provider);
-  }
-
-  async listMine(identity: AuthenticatedIdentity) {
-    const actor = await this.store.upsertUser(identity);
-    const memberships = await this.store.listProvidersForUser(actor.id);
-    return memberships.map(({ provider, role }) => ({
-      provider: toPublicProvider(provider),
-      role,
-    }));
-  }
-
-  async listMembers(
-    identity: AuthenticatedIdentity,
-    providerId: string,
-  ): Promise<ProviderMembership[]> {
-    const actor = await this.store.upsertUser(identity);
-    const role = await this.store.getMembershipRole(providerId, actor.id);
-    requireProviderPermission(role, "provider:read-private");
-    return (await this.store.listMemberships(providerId)).map(
-      toProviderMembership,
-    );
-  }
-
-  async setMember(
-    identity: AuthenticatedIdentity,
-    providerId: string,
-    targetUserId: string,
-    role: ProviderRole,
-    requestId: string,
-  ): Promise<ProviderMembership> {
-    const actor = await this.store.upsertUser(identity);
-    return toProviderMembership(
-      await this.store.setMembership({
-        actorUserId: actor.id,
-        providerId,
-        targetUserId,
-        role,
-        requestId,
-      }),
-    );
-  }
-
-  async removeMember(
-    identity: AuthenticatedIdentity,
-    providerId: string,
-    targetUserId: string,
-    requestId: string,
-  ): Promise<void> {
-    const actor = await this.store.upsertUser(identity);
-    await this.store.removeMembership({
-      actorUserId: actor.id,
-      providerId,
-      targetUserId,
-      requestId,
-    });
-  }
-
-  async update(
-    identity: AuthenticatedIdentity,
-    providerId: string,
-    input: UpdateProviderInput,
-    requestId: string,
-  ): Promise<PublicProvider> {
-    this.requireWalletProofForCloud(input.walletAddress);
-    const actor = await this.store.upsertUser(identity);
-    const role = await this.store.getMembershipRole(providerId, actor.id);
-    requireProviderPermission(role, "provider:update");
-
-    const current = await this.store.getProvider(providerId);
-    if (!current)
-      throw new AppError("RESOURCE_NOT_FOUND", "Provider not found.", 404);
-    if (current.version !== input.version) {
-      throw new AppError(
-        "VERSION_PRECONDITION_FAILED",
-        "The provider has changed since it was loaded.",
-        412,
-        { currentVersion: current.version },
-      );
-    }
-
-    const patch = {
-      ...(input.name !== undefined ? { name: input.name } : {}),
-      ...(input.description !== undefined
-        ? { description: input.description }
-        : {}),
-      ...(input.websiteUrl !== undefined
-        ? { websiteUrl: input.websiteUrl }
-        : {}),
-      ...(input.contact !== undefined ? { contact: input.contact } : {}),
-      ...(input.walletAddress !== undefined
-        ? { walletAddress: input.walletAddress }
-        : {}),
-    };
-    const updated = await this.store.updateProvider({
-      actorUserId: actor.id,
-      providerId,
-      expectedVersion: input.version,
-      patch,
-      requestId,
-    });
-    if (!updated) {
-      throw new AppError(
-        "VERSION_PRECONDITION_FAILED",
-        "The provider changed during the update.",
-        412,
-      );
-    }
-    return toPublicProvider(updated);
   }
 }

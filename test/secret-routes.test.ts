@@ -123,30 +123,18 @@ beforeEach(async () => {
 
 afterEach(async () => app.close());
 
-async function createProvider(user = "alice"): Promise<string> {
-  const response = await app.inject({
-    method: "POST",
-    url: "/v1/providers",
-    headers: { "x-facet-dev-user": user },
-    payload: { slug: `${user}-secrets`, name: `${user} Secrets` },
-  });
-  return response.json().provider.id as string;
-}
-
-describe("provider secret references", () => {
+describe("provider secret references keyed by :provider username", () => {
   it("creates and rotates write-only API key values without response leakage", async () => {
-    const providerId = await createProvider();
     const created = await app.inject({
       method: "POST",
-      url: `/v1/providers/${providerId}/secrets`,
-      headers: { "x-facet-dev-user": "alice" },
+      url: "/v1/providers/alice-labs/secrets",
+      headers: { "x-facet-dev-user": "alice-labs" },
       payload: { kind: "API_KEY", label: "Demo key", value: "first-canary" },
     });
 
     expect(created.statusCode).toBe(201);
     expect(created.json()).toMatchObject({
       secret: {
-        providerId,
         kind: "API_KEY",
         label: "Demo key",
         status: "ACTIVE",
@@ -161,8 +149,8 @@ describe("provider secret references", () => {
 
     const rotated = await app.inject({
       method: "POST",
-      url: `/v1/providers/${providerId}/secrets/${secretId}/rotate`,
-      headers: { "x-facet-dev-user": "alice" },
+      url: `/v1/providers/alice-labs/secrets/${secretId}/rotate`,
+      headers: { "x-facet-dev-user": "alice-labs" },
       payload: { value: "second-canary" },
     });
     expect(rotated.statusCode).toBe(200);
@@ -174,11 +162,10 @@ describe("provider secret references", () => {
   });
 
   it("denies cross-provider access and revokes an unused secret", async () => {
-    const providerId = await createProvider();
     const created = await app.inject({
       method: "POST",
-      url: `/v1/providers/${providerId}/secrets`,
-      headers: { "x-facet-dev-user": "alice" },
+      url: "/v1/providers/alice-labs/secrets",
+      headers: { "x-facet-dev-user": "alice-labs" },
       payload: {
         kind: "BEARER_TOKEN",
         label: "GitHub token",
@@ -190,8 +177,8 @@ describe("provider secret references", () => {
 
     const denied = await app.inject({
       method: "POST",
-      url: `/v1/providers/${providerId}/secrets/${secretId}/rotate`,
-      headers: { "x-facet-dev-user": "mallory" },
+      url: `/v1/providers/alice-labs/secrets/${secretId}/rotate`,
+      headers: { "x-facet-dev-user": "mallory-x" },
       payload: { value: "stolen" },
     });
     expect(denied.statusCode).toBe(403);
@@ -199,8 +186,8 @@ describe("provider secret references", () => {
 
     const revoked = await app.inject({
       method: "DELETE",
-      url: `/v1/providers/${providerId}/secrets/${secretId}`,
-      headers: { "x-facet-dev-user": "alice" },
+      url: `/v1/providers/alice-labs/secrets/${secretId}`,
+      headers: { "x-facet-dev-user": "alice-labs" },
     });
     expect(revoked.statusCode).toBe(204);
     expect(values.values.has(reference)).toBe(false);
@@ -208,11 +195,10 @@ describe("provider secret references", () => {
   });
 
   it("keeps the newly committed rotation usable when old-value cleanup fails", async () => {
-    const providerId = await createProvider();
     const created = await app.inject({
       method: "POST",
-      url: `/v1/providers/${providerId}/secrets`,
-      headers: { "x-facet-dev-user": "alice" },
+      url: "/v1/providers/alice-labs/secrets",
+      headers: { "x-facet-dev-user": "alice-labs" },
       payload: { kind: "API_KEY", label: "Retry key", value: "old-value" },
     });
     const secretId = created.json().secret.id as string;
@@ -221,8 +207,8 @@ describe("provider secret references", () => {
 
     const rotated = await app.inject({
       method: "POST",
-      url: `/v1/providers/${providerId}/secrets/${secretId}/rotate`,
-      headers: { "x-facet-dev-user": "alice" },
+      url: `/v1/providers/alice-labs/secrets/${secretId}/rotate`,
+      headers: { "x-facet-dev-user": "alice-labs" },
       payload: { value: "new-value" },
     });
 

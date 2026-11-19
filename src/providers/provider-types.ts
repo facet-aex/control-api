@@ -1,54 +1,46 @@
 import type { AuthenticatedIdentity } from "../auth/types.js";
+import type { UserStatus } from "../identifiers.js";
 
-export const PROVIDER_ROLES = [
-  "owner",
-  "admin",
-  "developer",
-  "viewer",
-] as const;
-export type ProviderRole = (typeof PROVIDER_ROLES)[number];
+export type ClerkWebhookUserEvent =
+  | {
+      type: "user.created" | "user.updated";
+      data: { id: string; username: string };
+    }
+  | {
+      type: "user.deleted";
+      data: { id: string; deleted?: boolean };
+    };
 
 export interface UserRecord {
   id: string;
-  externalSubject: string;
-  username?: string | null;
-  email: string | null;
-  displayName: string | null;
-  status: "active" | "disabled";
+  clerkId: string;
+  username: string;
+  walletAddress: string | null;
+  walletVerifiedAt: Date | null;
+  status: UserStatus;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface CurrentUser {
-  id: string;
-  username?: string | null;
-  email: string | null;
-  displayName: string | null;
-}
-
-export interface ProviderMembershipRecord {
-  user: CurrentUser;
-  role: ProviderRole;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-export interface ProviderRecord {
-  id: string;
-  slug: string;
-  name: string;
-  description: string;
-  websiteUrl: string | null;
-  contact: string | null;
+  clerkId: string;
+  username: string;
   walletAddress: string | null;
-  walletVerifiedAt: Date | null;
-  status: "active" | "disabled";
-  version: number;
-  createdAt: Date;
-  updatedAt: Date;
+  walletVerifiedAt: string | null;
+  status: UserStatus;
+}
+
+export interface PublicProvider {
+  provider: string;
+  walletAddress: string | null;
+  walletVerifiedAt: string | null;
+  status: UserStatus;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface WalletLinkChallenge {
   id: string;
-  providerId: string;
   userId: string;
   message: string;
   nonceHash: string;
@@ -56,32 +48,14 @@ export interface WalletLinkChallenge {
   consumedAt: Date | null;
 }
 
-export interface CreateProviderInput {
-  slug: string;
-  name: string;
-  description: string;
-  websiteUrl?: string | undefined;
-  contact?: string | undefined;
-  walletAddress?: string | undefined;
-}
-
-export interface UpdateProviderInput {
-  version: number;
-  name?: string | undefined;
-  description?: string | undefined;
-  websiteUrl?: string | null | undefined;
-  contact?: string | null | undefined;
-  walletAddress?: string | null | undefined;
-}
-
 export interface ProviderStore {
+  findUserByClerkId(clerkId: string): Promise<UserRecord | undefined>;
+  findUserByUsername(username: string): Promise<UserRecord | undefined>;
   upsertUser(identity: AuthenticatedIdentity): Promise<UserRecord>;
-  createProvider(input: {
-    actorUserId: string;
-    provider: CreateProviderInput;
-    requestId: string;
-  }): Promise<ProviderRecord>;
-  getProvider(providerId: string): Promise<ProviderRecord | undefined>;
+  applyClerkWebhook(
+    event: ClerkWebhookUserEvent,
+    requestId?: string,
+  ): Promise<void>;
   createWalletLinkChallenge(
     input: Omit<WalletLinkChallenge, "consumedAt">,
   ): Promise<void>;
@@ -90,60 +64,9 @@ export interface ProviderStore {
   ): Promise<WalletLinkChallenge | undefined>;
   consumeWalletLinkChallenge(input: {
     challengeId: string;
-    providerId: string;
     userId: string;
     walletAddress: string;
     now: Date;
     requestId: string;
-  }): Promise<ProviderRecord | undefined>;
-  getMembershipRole(
-    providerId: string,
-    userId: string,
-  ): Promise<ProviderRole | undefined>;
-  listMemberships(providerId: string): Promise<ProviderMembershipRecord[]>;
-  setMembership(input: {
-    actorUserId: string;
-    providerId: string;
-    targetUserId: string;
-    role: ProviderRole;
-    requestId: string;
-  }): Promise<ProviderMembershipRecord>;
-  removeMembership(input: {
-    actorUserId: string;
-    providerId: string;
-    targetUserId: string;
-    requestId: string;
-  }): Promise<void>;
-  listProvidersForUser(
-    userId: string,
-  ): Promise<Array<{ provider: ProviderRecord; role: ProviderRole }>>;
-  updateProvider(input: {
-    actorUserId: string;
-    providerId: string;
-    expectedVersion: number;
-    patch: Omit<UpdateProviderInput, "version">;
-    requestId: string;
-  }): Promise<ProviderRecord | undefined>;
-}
-
-export interface PublicProvider {
-  id: string;
-  slug: string;
-  name: string;
-  description: string;
-  websiteUrl: string | null;
-  contact: string | null;
-  walletAddress: string | null;
-  walletVerifiedAt: string | null;
-  status: "active" | "disabled";
-  version: number;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface ProviderMembership {
-  user: CurrentUser;
-  role: ProviderRole;
-  createdAt: string;
-  updatedAt: string;
+  }): Promise<UserRecord | undefined>;
 }

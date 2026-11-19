@@ -1,6 +1,5 @@
 import type { AuthenticatedIdentity } from "../auth/types.js";
 import { AppError } from "../errors.js";
-import { requireProviderPermission } from "../providers/provider-rbac.js";
 import type { ProviderStore } from "../providers/provider-types.js";
 import type {
   SecretKind,
@@ -33,29 +32,34 @@ export class SecretService {
     private readonly values: SecretValueStore,
   ) {}
 
-  private async authorize(identity: AuthenticatedIdentity, providerId: string) {
+  private async authorize(identity: AuthenticatedIdentity, provider: string) {
     const actor = await this.providers.upsertUser(identity);
-    const role = await this.providers.getMembershipRole(providerId, actor.id);
-    requireProviderPermission(role, "facet:write");
+    if (actor.username !== provider) {
+      throw new AppError(
+        "AUTHORIZATION_DENIED",
+        "The authenticated user is not authorized for this provider.",
+        403,
+      );
+    }
     return actor;
   }
 
   async create(
     identity: AuthenticatedIdentity,
     input: {
-      providerId: string;
+      provider: string;
       kind: "API_KEY" | "BEARER_TOKEN";
       label: string;
       value: string;
     },
     requestId: string,
   ) {
-    const actor = await this.authorize(identity, input.providerId);
+    const actor = await this.authorize(identity, input.provider);
     const stored = await this.values.put(input.value);
     try {
       const record = await this.secrets.createSecret({
         actorUserId: actor.id,
-        providerId: input.providerId,
+        providerId: actor.id,
         kind: (input.kind === "API_KEY"
           ? "api_key"
           : "bearer_token") satisfies SecretKind,
@@ -73,16 +77,16 @@ export class SecretService {
 
   async rotate(
     identity: AuthenticatedIdentity,
-    input: { providerId: string; secretId: string; value: string },
+    input: { provider: string; secretId: string; value: string },
     requestId: string,
   ) {
-    const actor = await this.authorize(identity, input.providerId);
+    const actor = await this.authorize(identity, input.provider);
     const stored = await this.values.put(input.value);
     let rotated: Awaited<ReturnType<SecretStore["rotateSecret"]>>;
     try {
       rotated = await this.secrets.rotateSecret({
         actorUserId: actor.id,
-        providerId: input.providerId,
+        providerId: actor.id,
         secretId: input.secretId,
         vaultProvider: stored.provider,
         vaultReference: stored.reference,
@@ -101,13 +105,13 @@ export class SecretService {
 
   async revoke(
     identity: AuthenticatedIdentity,
-    input: { providerId: string; secretId: string },
+    input: { provider: string; secretId: string },
     requestId: string,
   ): Promise<void> {
-    const actor = await this.authorize(identity, input.providerId);
+    const actor = await this.authorize(identity, input.provider);
     const revoked = await this.secrets.revokeSecret({
       actorUserId: actor.id,
-      providerId: input.providerId,
+      providerId: actor.id,
       secretId: input.secretId,
       requestId,
     });
