@@ -1,39 +1,31 @@
-# FACET Control API
+# FACET Control API (`@facet/control-api`)
 
-FACET control plane for provider identity/membership, Facet drafts and versions, publication, catalog and import commands.
+[![FACET](https://img.shields.io/badge/FACET-facet.briandev.space-050505?style=flat-square&labelColor=DFFF4F)](https://facet.briandev.space)
+[![Layer](https://img.shields.io/badge/BACKEND-CONTROL%20PLANE-0D0D0D?style=flat-square&labelColor=343434)](https://github.com/facet-aex)
 
-**Phase:** 1 — active.
-**Runtime:** Fastify + PostgreSQL, host-native.
-**Boundary:** Does not execute provider endpoints and never owns payment signing keys.
+> Core control-plane HTTP API and background worker managing FACET identities, authoring, publication, catalog, and faucet workflows.
 
-This is a standalone npm repository. It owns its `package-lock.json`, database migrations, service configuration, authorization rules, tests and API documentation. Shared schemas are consumed as a pinned `contracts` release/package, never from a sibling path.
+## Overview
 
-## Local setup
+`control-api` is the central control plane and system of record for **FACET**. It manages user accounts, capability drafts, immutable SemVer version publication, public catalog queries, upstream credential references, and test `fUSD` faucet distribution.
 
-```bash
-cp .env.example .env
-npm ci
-npm run db:migrate
-npm run dev
-```
+## Role in FACET
 
-OpenAPI ingestion uses three local processes. Start `openapi-importer` on its configured port first, then run the Control API and worker in separate terminals:
+- **Unified User & Payout Identity:** Synchronizes Clerk users via verified webhooks into a single `users` account model and verifies payout wallet ownership (`providerPayTo`).
+- **Facet Lifecycle & Validation:** Manages creation, manifest validation, pricing configuration (`PAY_PER_RUN` and `PAY_PER_RESULT`), and immutable publication across `API`, `ACTOR`, and `AGENT` modalities.
+- **Background Outbox Worker:** Coordinates asynchronous OpenAPI import jobs with `openapi-importer` and anchors published Facet versions onto `FacetActorRegistry` on Avalanche.
+- **Catalog & Faucet API:** Serves the public capability catalog consumed by `web`, `@facet-aex/cli`, and `@facet-aex/mcp-server`, alongside rate-limited `fUSD` claims.
 
-```bash
-npm run dev
-npm run worker:dev
-```
+## Tech Stack
 
-The worker polls the PostgreSQL transactional outbox, claims work with an expiring lease, calls importer contract v0.6, verifies snapshot integrity and persists normalized operation candidates plus per-operation warnings. It retries transient network/5xx failures up to the configured limit; deterministic importer errors become terminal job failures.
+| Layer | Technology |
+|---|---|
+| Runtime & HTTP | Node.js 24 (ESM), TypeScript, Fastify 5 |
+| Database | PostgreSQL 18, Drizzle ORM, `pg` |
+| Validation & Contracts | Ajv (JSON Schema 2020-12), Zod |
+| Auth & Blockchain | Clerk (`@clerk/backend`), `viem` |
+| Testing & Container | Vitest, ESLint, Docker (`node:24-alpine`) |
 
-Replace the placeholder `DATABASE_URL` in the ignored `.env`. Liveness is available at `/health/live`; `/health/ready` additionally verifies PostgreSQL. Run `npm run verify` before committing.
+---
 
-After migrations, `npm run db:smoke` verifies provider creation, membership mutation, final-owner protection, paste/URL import worker completion, candidate persistence, atomic Facet-draft creation, write-only secret rotation, protected endpoint configuration, manifest/schema validation, exact warning acknowledgement and immutable publication against the configured local database. It checks the published-version pointer, rejects repeated publication and post-publication mutation, checks that secret canaries do not enter PostgreSQL/API/audit responses, uses temporary object/secret-store directories and removes synthetic records before exiting.
-
-Phase 1 source snapshots use the local filesystem adapter rooted at `FACET_OBJECT_ROOT`. Objects are content-addressed, written with owner-only permissions and verified on read. This adapter is for the local demo only; object keys are internal identifiers, not public filesystem paths.
-
-Phase 1 provider credentials use the development secret-store adapter rooted at `FACET_SECRET_ROOT`. Values are owner-readable files behind opaque references; PostgreSQL stores only reference metadata. This local adapter is not encrypted storage and is not a production security claim. Endpoint base URLs remain private control-plane configuration and are never returned by the configuration response or public manifest.
-
-Draft validation uses the v0.8 schemas and Ajv 8's JSON Schema 2020-12 implementation. It validates the public manifest shape, compiles normalized input/output/error schemas without remote loading, requires endpoint/auth configuration and requires an exact deterministic acknowledgement for every current warning before moving a version to `VALID`. Contract `0.9.0` adds optimistic publication. See `docs/dependencies.md` for the pinned dependency decision.
-
-Phase 1 local authentication uses `FACET_AUTH_MODE=local` and requires an `x-facet-dev-user` header on protected routes. This mode fails closed outside `FACET_ENV=local`. See `docs/authentication.md`, `docs/providers-api.md`, `docs/openapi-imports-api.md`, `docs/facet-drafts-api.md`, `docs/upstream-config-api.md` and `docs/facet-publication-api.md` for the current boundary and examples.
+Part of **[FACET](https://facet.briandev.space)** (`facet-aex`) — Federated Agent Capability Exchange & Trust on Avalanche.
