@@ -19,7 +19,7 @@ import { PostgresFacetValidationStore } from "./facets/postgres-facet-validation
 import { PostgresFacetDraftStore } from "./facets/postgres-facet-draft-store.js";
 import { PostgresFacetPublicationStore } from "./facets/postgres-facet-publication-store.js";
 import { PostgresPublicCatalog } from "./facets/public-catalog.js";
-import { FujiFusdMinter } from "./faucet/faucet-minter.js";
+import { FujiFusdDispenser } from "./faucet/faucet-minter.js";
 import { FaucetService, PostgresFaucetStore } from "./faucet/faucet-service.js";
 import { ImportService } from "./imports/import-service.js";
 import { PostgresImportStore } from "./imports/postgres-import-store.js";
@@ -102,16 +102,16 @@ const facetPublicationService = new FacetPublicationService(
   providerStore,
   new PostgresFacetPublicationStore(database.db),
 );
-const faucetMinter = config.FACET_FUSD_MINTER_PRIVATE_KEY
-  ? new FujiFusdMinter(
+const faucetDispenser = config.FACET_FAUCET_PRIVATE_KEY
+  ? new FujiFusdDispenser(
       config.FACET_FUJI_RPC_URL,
       config.FACET_USD_ADDRESS,
-      config.FACET_FUSD_MINTER_PRIVATE_KEY,
+      config.FACET_FAUCET_PRIVATE_KEY,
     )
   : undefined;
 const faucetService = new FaucetService(
   new PostgresFaucetStore(database.pool),
-  faucetMinter,
+  faucetDispenser,
   {
     dripAtomic: config.FACET_FAUCET_DRIP_ATOMIC,
     addressCooldownSec: config.FACET_FAUCET_ADDRESS_COOLDOWN_SEC,

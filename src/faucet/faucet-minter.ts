@@ -10,10 +10,10 @@ import { privateKeyToAccount } from "viem/accounts";
 import { avalancheFuji } from "viem/chains";
 
 import { AppError } from "../errors.js";
-import type { FaucetMintResult, FaucetMinter } from "./faucet-types.js";
+import type { FaucetDispenseResult, FaucetDispenser } from "./faucet-types.js";
 
 const FUSD_ABI = parseAbi([
-  "function mint(address to, uint256 amount) external",
+  "function transfer(address to, uint256 amount) external returns (bool)",
   "function balanceOf(address account) view returns (uint256)",
 ]);
 
@@ -22,16 +22,17 @@ const NONCE_RETRY_PATTERN =
 
 export interface FaucetRpcAdapter {
   getPendingNonce(): Promise<number>;
-  sendMint(params: {
+  sendTransfer(params: {
     recipient: Address;
     amountAtomic: bigint;
     nonce: number;
   }): Promise<Hex>;
   waitForReceipt(txHash: Hex): Promise<{ status: "success" | "reverted" }>;
-  readBalance(recipient: Address): Promise<bigint>;
+  readBalance(account: Address): Promise<bigint>;
 }
 
-export class FujiFusdMinter implements FaucetMinter {
+export class FujiFusdDispenser implements FaucetDispenser {
+  private readonly senderAddress: Address;
   private readonly rpc: FaucetRpcAdapter;
 
   constructor(
@@ -44,15 +45,17 @@ export class FujiFusdMinter implements FaucetMinter {
       throw new Error("Invalid FACET_USD_ADDRESS");
     }
     if (!/^0x[a-f0-9]{64}$/iu.test(privateKey)) {
-      throw new Error("Invalid FACET_FUSD_MINTER_PRIVATE_KEY");
+      throw new Error("Invalid FACET_FAUCET_PRIVATE_KEY");
     }
+
+    const account = privateKeyToAccount(privateKey as Hex);
+    this.senderAddress = account.address;
 
     if (adapter) {
       this.rpc = adapter;
       return;
     }
 
-    const account = privateKeyToAccount(privateKey as Hex);
     const tokenAddress = fusdAddress as Address;
     const publicClient = createPublicClient({
       chain: avalancheFuji,
@@ -70,11 +73,11 @@ export class FujiFusdMinter implements FaucetMinter {
           address: account.address,
           blockTag: "pending",
         }),
-      sendMint: async ({ recipient, amountAtomic, nonce }) =>
+      sendTransfer: async ({ recipient, amountAtomic, nonce }) =>
         walletClient.writeContract({
           address: tokenAddress,
           abi: FUSD_ABI,
-          functionName: "mint",
+          functionName: "transfer",
           args: [recipient, amountAtomic],
           nonce,
           account,
@@ -88,28 +91,40 @@ export class FujiFusdMinter implements FaucetMinter {
           status: receipt.status === "success" ? "success" : "reverted",
         };
       },
-      readBalance: async (recipient) =>
+      readBalance: async (target) =>
         publicClient.readContract({
           address: tokenAddress,
           abi: FUSD_ABI,
           functionName: "balanceOf",
-          args: [recipient],
+          args: [target],
         }),
     };
   }
 
-  async mint(
+  async dispense(
     recipientAddress: string,
     amountAtomic: bigint,
-  ): Promise<FaucetMintResult> {
+  ): Promise<FaucetDispenseResult> {
     const recipient = recipientAddress as Address;
+    const faucetBalance = await this.rpc.readBalance(this.senderAddress);
+    if (faucetBalance < amountAtomic) {
+      throw new AppError(
+        "FAUCET_INSUFFICIENT_BALANCE",
+        "Faucet wallet does not have enough test fUSD to fulfill this request right now.",
+        503,
+      );
+    }
 
     let txHash: Hex | undefined;
     let lastError: unknown;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const nonce = await this.rpc.getPendingNonce();
       try {
-        txHash = await this.rpc.sendMint({ recipient, amountAtomic, nonce });
+        txHash = await this.rpc.sendTransfer({
+          recipient,
+          amountAtomic,
+          nonce,
+        });
         break;
       } catch (error) {
         lastError = error;
@@ -118,8 +133,8 @@ export class FujiFusdMinter implements FaucetMinter {
           continue;
         }
         throw new AppError(
-          "FAUCET_MINT_FAILED",
-          "Unable to submit test fUSD mint transaction.",
+          "FAUCET_TRANSFER_FAILED",
+          "Unable to submit test fUSD transfer transaction.",
           502,
         );
       }
@@ -127,10 +142,10 @@ export class FujiFusdMinter implements FaucetMinter {
 
     if (!txHash) {
       throw new AppError(
-        "FAUCET_MINT_FAILED",
+        "FAUCET_TRANSFER_FAILED",
         lastError instanceof Error
-          ? "Unable to submit test fUSD mint transaction."
-          : "Faucet mint failed.",
+          ? "Unable to submit test fUSD transfer transaction."
+          : "Faucet transfer failed.",
         502,
       );
     }
@@ -138,8 +153,8 @@ export class FujiFusdMinter implements FaucetMinter {
     const receipt = await this.rpc.waitForReceipt(txHash);
     if (receipt.status !== "success") {
       throw new AppError(
-        "FAUCET_MINT_FAILED",
-        "Faucet mint transaction reverted on Avalanche.",
+        "FAUCET_TRANSFER_FAILED",
+        "Faucet transfer transaction reverted on Avalanche.",
         502,
       );
     }

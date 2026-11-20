@@ -17,16 +17,16 @@ export interface FaucetClaimResponse {
   nextClaimAt: string;
 }
 
-export interface FaucetMintResult {
+export interface FaucetDispenseResult {
   txHash: string;
   balanceAtomic: string;
 }
 
-export interface FaucetMinter {
-  mint(
+export interface FaucetDispenser {
+  dispense(
     recipientAddress: string,
     amountAtomic: bigint,
-  ): Promise<FaucetMintResult>;
+  ): Promise<FaucetDispenseResult>;
 }
 
 export interface FaucetClaimRecord {

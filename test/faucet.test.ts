@@ -2,19 +2,20 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
 import { readConfig } from "../src/config.js";
-import { FujiFusdMinter } from "../src/faucet/faucet-minter.js";
+import { AppError } from "../src/errors.js";
+import { FujiFusdDispenser } from "../src/faucet/faucet-minter.js";
 import { FaucetService } from "../src/faucet/faucet-service.js";
 import type {
   FaucetClaimInput,
   FaucetClaimRecord,
-  FaucetMinter,
+  FaucetDispenser,
   FaucetStore,
 } from "../src/faucet/faucet-types.js";
 
 const VALID_ADDRESS = "0x9265c1c87fC5fb3C72Dc68b4D3A005dE1E22C3cf";
 const SECOND_ADDRESS = "0x1111111111111111111111111111111111111111";
 const THIRD_ADDRESS = "0x2222222222222222222222222222222222222222";
-const TEST_MINTER_KEY = `0x${"1".repeat(64)}` as `0x${string}`;
+const TEST_FAUCET_KEY = `0x${"1".repeat(64)}` as `0x${string}`;
 const TX_HASH_1 = `0x${"a".repeat(64)}` as `0x${string}`;
 const TX_HASH_2 = `0x${"b".repeat(64)}` as `0x${string}`;
 
@@ -70,7 +71,7 @@ afterEach(async () => {
 });
 
 describe("control-api fUSD faucet", () => {
-  it("boots cleanly with default faucet settings when minter private key is unset", () => {
+  it("boots cleanly with default faucet settings when faucet wallet key is unset", () => {
     const config = readConfig({
       FACET_ENV: "production",
       FACET_AUTH_MODE: "clerk",
@@ -80,29 +81,29 @@ describe("control-api fUSD faucet", () => {
       FACET_IMPORTER_ALLOW_PRIVATE_HTTP: "1",
       FACET_EXECUTOR_TOKEN: "a".repeat(32),
       FACET_EXECUTOR_URL: "http://executor:4030",
-      FACET_FUSD_MINTER_PRIVATE_KEY: "",
+      FACET_FAUCET_PRIVATE_KEY: "",
     });
 
-    expect(config.FACET_FUSD_MINTER_PRIVATE_KEY).toBeUndefined();
+    expect(config.FACET_FAUCET_PRIVATE_KEY).toBeUndefined();
     expect(config.FACET_FAUCET_DRIP_ATOMIC).toBe("1000000");
     expect(config.FACET_FAUCET_ADDRESS_COOLDOWN_SEC).toBe(86400);
     expect(config.FACET_FAUCET_IP_DAILY_LIMIT).toBe(10);
   });
 
-  it("mints 1000000 atomic fUSD on valid 0x claim and records normalized claim", async () => {
+  it("dispenses 1000000 atomic fUSD on valid 0x claim and records normalized claim", async () => {
     const store = new InMemoryFaucetStore();
     const now = new Date("2026-11-20T00:00:00.000Z");
-    const minterCalls: Array<{ to: string; amountAtomic: bigint }> = [];
-    const minter: FaucetMinter = {
-      async mint(to, amountAtomic) {
-        minterCalls.push({ to, amountAtomic });
+    const calls: Array<{ to: string; amountAtomic: bigint }> = [];
+    const dispenser: FaucetDispenser = {
+      async dispense(to, amountAtomic) {
+        calls.push({ to, amountAtomic });
         return {
           txHash: TX_HASH_1,
           balanceAtomic: "2500000",
         };
       },
     };
-    const service = new FaucetService(store, minter, {
+    const service = new FaucetService(store, dispenser, {
       dripAtomic: "1000000",
       addressCooldownSec: 86_400,
       ipDailyLimit: 10,
@@ -145,9 +146,7 @@ describe("control-api fUSD faucet", () => {
       explorerUrl: `https://testnet.snowtrace.io/tx/${TX_HASH_1}`,
       nextClaimAt: "2026-11-21T00:00:00.000Z",
     });
-    expect(minterCalls).toEqual([
-      { to: VALID_ADDRESS, amountAtomic: 1_000_000n },
-    ]);
+    expect(calls).toEqual([{ to: VALID_ADDRESS, amountAtomic: 1_000_000n }]);
     expect(store.lockCalls).toBe(1);
     expect(store.records).toHaveLength(1);
     expect(store.records[0]?.recipientAddress).toBe(
@@ -158,12 +157,12 @@ describe("control-api fUSD faucet", () => {
 
   it("enforces case-insensitive per-address cooldown with 429 FAUCET_COOLDOWN", async () => {
     const store = new InMemoryFaucetStore();
-    const minter: FaucetMinter = {
-      async mint() {
+    const dispenser: FaucetDispenser = {
+      async dispense() {
         return { txHash: TX_HASH_1, balanceAtomic: "1000000" };
       },
     };
-    const service = new FaucetService(store, minter, {
+    const service = new FaucetService(store, dispenser, {
       dripAtomic: "1000000",
       addressCooldownSec: 3600,
       ipDailyLimit: 10,
@@ -204,12 +203,12 @@ describe("control-api fUSD faucet", () => {
 
   it("enforces daily per-IP limit with 429 FAUCET_IP_LIMIT", async () => {
     const store = new InMemoryFaucetStore();
-    const minter: FaucetMinter = {
-      async mint() {
+    const dispenser: FaucetDispenser = {
+      async dispense() {
         return { txHash: TX_HASH_1, balanceAtomic: "1000000" };
       },
     };
-    const service = new FaucetService(store, minter, {
+    const service = new FaucetService(store, dispenser, {
       dripAtomic: "1000000",
       addressCooldownSec: 60,
       ipDailyLimit: 2,
@@ -259,12 +258,12 @@ describe("control-api fUSD faucet", () => {
 
   it("rejects invalid addresses with 400 VALIDATION_FAILED", async () => {
     const store = new InMemoryFaucetStore();
-    const minter: FaucetMinter = {
-      async mint() {
-        throw new Error("should not mint");
+    const dispenser: FaucetDispenser = {
+      async dispense() {
+        throw new Error("should not dispense");
       },
     };
-    const service = new FaucetService(store, minter, {
+    const service = new FaucetService(store, dispenser, {
       dripAtomic: "1000000",
       addressCooldownSec: 86_400,
       ipDailyLimit: 10,
@@ -289,7 +288,7 @@ describe("control-api fUSD faucet", () => {
     });
   });
 
-  it("returns 503 FAUCET_NOT_CONFIGURED and enabled: false when minter key is missing", async () => {
+  it("returns 503 FAUCET_NOT_CONFIGURED and enabled: false when faucet key is missing", async () => {
     const store = new InMemoryFaucetStore();
     const service = new FaucetService(store, undefined, {
       dripAtomic: "1000000",
@@ -327,18 +326,69 @@ describe("control-api fUSD faucet", () => {
     });
   });
 
-  it("retries once on nonce conflict in FujiFusdMinter and never records failed mints", async () => {
-    const noncesSeen: number[] = [];
-    let attempt = 0;
-    const minter = new FujiFusdMinter(
+  it("returns 503 FAUCET_INSUFFICIENT_BALANCE without sending tx when pre-funded wallet balance is too low", async () => {
+    let transferCalled = false;
+    const dispenser = new FujiFusdDispenser(
       "https://api.avax-test.network/ext/bc/C/rpc",
       "0xe7082a54a456dc4dfe0ceadcd0d0dce7d8ba176f",
-      TEST_MINTER_KEY,
+      TEST_FAUCET_KEY,
+      {
+        async getPendingNonce() {
+          return 0;
+        },
+        async sendTransfer() {
+          transferCalled = true;
+          return TX_HASH_2;
+        },
+        async waitForReceipt() {
+          return { status: "success" as const };
+        },
+        async readBalance() {
+          return 500_000n;
+        },
+      },
+    );
+
+    const store = new InMemoryFaucetStore();
+    const service = new FaucetService(store, dispenser, {
+      dripAtomic: "1000000",
+      addressCooldownSec: 86_400,
+      ipDailyLimit: 10,
+      ipHashSalt: "test-salt",
+    });
+    const app = await buildApp({
+      checkDatabase: async () => undefined,
+      environment: "local",
+      webOrigin: "http://localhost:3000",
+      faucetRoutes: { service },
+    });
+    apps.push(app);
+
+    const claim = await app.inject({
+      method: "POST",
+      url: "/v1/faucet/claim",
+      payload: { address: VALID_ADDRESS },
+    });
+    expect(claim.statusCode).toBe(503);
+    expect(claim.json()).toMatchObject({
+      error: { code: "FAUCET_INSUFFICIENT_BALANCE" },
+    });
+    expect(transferCalled).toBe(false);
+    expect(store.records).toHaveLength(0);
+  });
+
+  it("retries once on nonce conflict in FujiFusdDispenser and never records failed transfers", async () => {
+    const noncesSeen: number[] = [];
+    let attempt = 0;
+    const dispenser = new FujiFusdDispenser(
+      "https://api.avax-test.network/ext/bc/C/rpc",
+      "0xe7082a54a456dc4dfe0ceadcd0d0dce7d8ba176f",
+      TEST_FAUCET_KEY,
       {
         async getPendingNonce() {
           return attempt === 0 ? 7 : 8;
         },
-        async sendMint({ nonce }) {
+        async sendTransfer({ nonce }) {
           noncesSeen.push(nonce);
           attempt += 1;
           if (attempt === 1) {
@@ -349,13 +399,15 @@ describe("control-api fUSD faucet", () => {
         async waitForReceipt() {
           return { status: "success" as const };
         },
-        async readBalance() {
-          return 1_000_000n;
+        async readBalance(address) {
+          return address.toLowerCase() === VALID_ADDRESS.toLowerCase()
+            ? 1_000_000n
+            : 1_000_000_000_000n;
         },
       },
     );
 
-    const result = await minter.mint(VALID_ADDRESS, 1_000_000n);
+    const result = await dispenser.dispense(VALID_ADDRESS, 1_000_000n);
     expect(result).toEqual({
       txHash: TX_HASH_2,
       balanceAtomic: "1000000",
@@ -363,12 +415,12 @@ describe("control-api fUSD faucet", () => {
     expect(noncesSeen).toEqual([7, 8]);
 
     const store = new InMemoryFaucetStore();
-    const failingMinter: FaucetMinter = {
-      async mint() {
-        throw new Error("rpc timeout");
+    const failingDispenser: FaucetDispenser = {
+      async dispense() {
+        throw new AppError("FAUCET_TRANSFER_FAILED", "rpc timeout", 502);
       },
     };
-    const service = new FaucetService(store, failingMinter, {
+    const service = new FaucetService(store, failingDispenser, {
       dripAtomic: "1000000",
       addressCooldownSec: 86_400,
       ipDailyLimit: 10,

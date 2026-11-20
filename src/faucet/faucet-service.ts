@@ -7,7 +7,7 @@ import type {
   FaucetClaimInput,
   FaucetClaimRecord,
   FaucetClaimResponse,
-  FaucetMinter,
+  FaucetDispenser,
   FaucetStatus,
   FaucetStore,
 } from "./faucet-types.js";
@@ -182,7 +182,7 @@ export class FaucetService {
 
   constructor(
     private readonly store: FaucetStore,
-    private readonly minter: FaucetMinter | undefined,
+    private readonly dispenser: FaucetDispenser | undefined,
     private readonly options: FaucetServiceOptions,
   ) {
     this.now = options.now ?? (() => new Date());
@@ -190,7 +190,7 @@ export class FaucetService {
 
   getStatus(): FaucetStatus {
     return {
-      enabled: Boolean(this.minter),
+      enabled: Boolean(this.dispenser),
       dripAtomic: this.options.dripAtomic,
       addressCooldownSec: this.options.addressCooldownSec,
     };
@@ -208,7 +208,7 @@ export class FaucetService {
         400,
       );
     }
-    if (!this.minter) {
+    if (!this.dispenser) {
       throw new AppError(
         "FAUCET_NOT_CONFIGURED",
         "Testnet fUSD faucet is not configured on this server.",
@@ -221,7 +221,7 @@ export class FaucetService {
     const ipHash = createHash("sha256")
       .update(`${this.options.ipHashSalt}:${clientIp}`)
       .digest("hex");
-    const minter = this.minter;
+    const dispenser = this.dispenser;
 
     return this.store.withMintLock(async (tx) => {
       const now = this.now();
@@ -256,7 +256,7 @@ export class FaucetService {
         );
       }
 
-      const minted = await minter.mint(
+      const transferred = await dispenser.dispense(
         checksumAddress,
         BigInt(this.options.dripAtomic),
       );
@@ -265,16 +265,16 @@ export class FaucetService {
         recipientAddress: normalizedRecipient,
         ipHash,
         amountAtomic: this.options.dripAtomic,
-        txHash: minted.txHash,
+        txHash: transferred.txHash,
         claimedAt: now,
       });
 
       return {
         address: checksumAddress,
         amountAtomic: this.options.dripAtomic,
-        balanceAtomic: minted.balanceAtomic,
-        txHash: minted.txHash,
-        explorerUrl: `${SNOWTRACE_TX_PREFIX}${minted.txHash}`,
+        balanceAtomic: transferred.balanceAtomic,
+        txHash: transferred.txHash,
+        explorerUrl: `${SNOWTRACE_TX_PREFIX}${transferred.txHash}`,
         nextClaimAt: new Date(now.getTime() + cooldownMs).toISOString(),
       };
     });

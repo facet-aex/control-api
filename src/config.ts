@@ -109,7 +109,7 @@ const environmentSchema = z.object({
       .regex(/^sha256:[a-f0-9]{64}$/u)
       .optional(),
   ),
-  FACET_FUSD_MINTER_PRIVATE_KEY: z.preprocess(
+  FACET_FAUCET_PRIVATE_KEY: z.preprocess(
     (value) =>
       typeof value === "string" && value.trim() === "" ? undefined : value,
     z
