@@ -10,9 +10,11 @@ import { AppError } from "../src/errors.js";
 import {
   ActorAgentService,
   computeActorImageDigest,
+  hydratePricingOptions,
 } from "../src/facets/actor-agent-service.js";
 import type {
   ActorAgentStore,
+  FacetPricingOption,
   PublishedActorRecord,
   PublishedAgentFacetRecord,
   PublishedFacetRegistryContext,
@@ -37,6 +39,7 @@ interface StoredActorItem {
   category: string;
   pricingModel: "PAY_PER_RUN" | "PAY_PER_RESULT";
   priceAtomic: string;
+  pricingOptions: FacetPricingOption[];
   record: PublishedActorRecord;
 }
 
@@ -46,6 +49,7 @@ interface StoredAgentItem {
   category: string;
   pricingModel: "PAY_PER_RUN" | "PAY_PER_RESULT";
   priceAtomic: string;
+  pricingOptions: FacetPricingOption[];
   record: PublishedAgentFacetRecord;
 }
 
@@ -87,6 +91,7 @@ class MemoryActorAgentStore implements ActorAgentStore {
         status: item.record.status,
         pricingModel: item.pricingModel,
         priceAtomic: item.priceAtomic,
+        pricingOptions: item.pricingOptions,
         registryVerified:
           item.record.registryVerified || this.verifiedTxs.has(item.versionId),
         registryTxHash: this.verifiedTxs.get(item.versionId) ?? null,
@@ -110,6 +115,7 @@ class MemoryActorAgentStore implements ActorAgentStore {
         status: item.record.status,
         pricingModel: item.pricingModel,
         priceAtomic: item.priceAtomic,
+        pricingOptions: item.pricingOptions,
         registryVerified: this.verifiedTxs.has(item.versionId),
         registryTxHash: this.verifiedTxs.get(item.versionId) ?? null,
         errorCode: null,
@@ -202,6 +208,14 @@ class MemoryActorAgentStore implements ActorAgentStore {
       category: input.command.category,
       pricingModel: input.command.pricingModel ?? "PAY_PER_RUN",
       priceAtomic: input.command.priceAtomic ?? "1000",
+      pricingOptions:
+        input.pricingOptions ??
+        hydratePricingOptions({
+          pricingModel: input.command.pricingModel,
+          priceAtomic: input.command.priceAtomic,
+          maxItemsCap: input.command.maxItemsCap,
+          payTo: input.payTo,
+        }).options,
       record,
     });
     if (input.pending) {
@@ -260,6 +274,14 @@ class MemoryActorAgentStore implements ActorAgentStore {
       category: input.command.category,
       pricingModel: input.command.pricingModel ?? "PAY_PER_RUN",
       priceAtomic: input.command.priceAtomic ?? "1000",
+      pricingOptions:
+        input.pricingOptions ??
+        hydratePricingOptions({
+          pricingModel: input.command.pricingModel,
+          priceAtomic: input.command.priceAtomic,
+          maxItemsCap: input.command.maxItemsCap,
+          payTo: input.payTo,
+        }).options,
       record,
     });
     this.contexts.set(
@@ -861,5 +883,85 @@ describe("1-step Hosted Actor and ERC-8004 A2A Agent publishing under Option B",
     expect(mine.body).not.toContain("facetId");
     expect(mine.body).not.toContain("versionId");
     expect(mine.body).not.toContain("userId");
+  });
+
+  it("supports multi-pricing pricingOptions on POST /v1/agent-facets, rejects priceAtomic='0', and returns pricingOptions in GET /v1/facets/mine", async () => {
+    const zeroPrice = await app.inject({
+      method: "POST",
+      url: "/v1/actors",
+      headers: { "x-facet-dev-user": "alice-labs" },
+      payload: {
+        facetName: "zero-price-actor",
+        facetDisplayName: "Zero Price Actor",
+        description: "Rejects zero atomic price.",
+        category: "test",
+        inputSchema: { type: "object" },
+        code: "export default async function run(input) { return [input]; }",
+        pricingModel: "PAY_PER_RUN",
+        priceAtomic: "0",
+      },
+    });
+    expect(zeroPrice.statusCode).toBe(400);
+
+    const agentRes = await app.inject({
+      method: "POST",
+      url: "/v1/agent-facets",
+      headers: { "x-facet-dev-user": "alice-labs" },
+      payload: {
+        facetName: "multi-price-agent",
+        facetDisplayName: "Multi Price Agent",
+        version: "1.0.0",
+        description: "ERC-8004 agent with dual pricing.",
+        category: "a2a-agents",
+        erc8004TokenId: "77",
+        taskKind: "vn-market-analysis",
+        inputSchema: { type: "object" },
+        pricingOptions: [
+          { model: "PAY_PER_RUN", priceAtomic: "2000" },
+          {
+            model: "PAY_PER_RESULT",
+            priceAtomic: "500",
+            maxItemsCap: 10,
+            isPrimary: true,
+          },
+        ],
+      },
+    });
+    expect(agentRes.statusCode).toBe(201);
+
+    const mine = await app.inject({
+      method: "GET",
+      url: "/v1/facets/mine",
+      headers: { "x-facet-dev-user": "alice-labs" },
+    });
+    expect(mine.statusCode).toBe(200);
+    expect(mine.json()).toEqual({
+      facets: [
+        expect.objectContaining({
+          provider: "alice-labs",
+          facetName: "multi-price-agent",
+          facetType: "AGENT",
+          pricingModel: "PAY_PER_RESULT",
+          priceAtomic: "500",
+          pricingOptions: [
+            expect.objectContaining({
+              model: "PAY_PER_RUN",
+              priceAtomic: "2000",
+              maxAmountAtomic: "2000",
+              isPrimary: false,
+            }),
+            expect.objectContaining({
+              model: "PAY_PER_RESULT",
+              priceAtomic: "500",
+              maxItemsCap: 10,
+              maxAmountAtomic: "5000",
+              isPrimary: true,
+            }),
+          ],
+        }),
+      ],
+    });
+    expect(mine.body).not.toContain("versionId");
+    expect(mine.body).not.toContain("facetId");
   });
 });

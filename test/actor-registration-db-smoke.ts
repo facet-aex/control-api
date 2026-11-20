@@ -130,6 +130,9 @@ try {
   const job = await outbox.next();
   assert(job);
   assert.equal(job.versionId, dbRow.versionId);
+  assert.equal(job.facetType, "ACTOR");
+  assert.equal(job.digest, input.imageDigest);
+  assert.equal(job.pricingModel, "PAY_PER_RUN");
   assert.equal(await outbox.next(), null);
   const signed = { hash: `0x${"c".repeat(64)}`, raw: "0x1234" };
   await outbox.saveSigned(job.versionId, signed);
@@ -144,11 +147,17 @@ try {
     ),
     true,
   );
-  assert.equal(
-    (await catalog.getByName(username, facetName))?.facetName,
-    facetName,
-  );
+  const catalogFacet = await catalog.getByName(username, facetName);
+  assert.equal(catalogFacet?.facetName, facetName);
+  assert.equal(catalogFacet?.pricing.model, "PAY_PER_RUN");
+  assert.equal(catalogFacet?.pricing.maxAmountAtomic, "1000");
+  assert.equal(catalogFacet?.pricing.isPrimary, true);
+  assert.equal(catalogFacet?.pricingOptions.length, 1);
   assert.equal((await store.listMyActors(user.id))[0]?.status, "PUBLISHED");
+  assert.equal(
+    (await store.listMyFacets(user.id))[0]?.pricingOptions?.length,
+    1,
+  );
   const allowance = new PostgresDemoPayerAllowance(database.pool);
   const now = new Date("2026-11-18T00:00:00.000Z");
   const target = { provider: username, facetName, version };

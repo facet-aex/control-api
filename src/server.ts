@@ -83,7 +83,11 @@ const actorAgentService = new ActorAgentService(
   providerStore,
   new PostgresActorAgentStore(database.db),
   registryVerifier,
-  { environment: config.FACET_ENV, publicBaseUrl: config.WEB_ORIGIN },
+  {
+    environment: config.FACET_ENV,
+    publicBaseUrl: config.WEB_ORIGIN,
+    maxPaymentAtomic: config.FACET_MAX_PAYMENT_ATOMIC,
+  },
 );
 const secretService = new SecretService(
   providerStore,

@@ -6,12 +6,15 @@ import {
   isValidFacetName,
   isValidSemver,
   isValidUsername,
+  type PricingModel,
 } from "../identifiers.js";
 import type { ProviderStore } from "../providers/provider-types.js";
 import { hashFacetManifest } from "./facet-manifest.js";
 import type { RegistryVerifier } from "./fuji-registry-verifier.js";
 import type {
   ActorAgentStore,
+  CreatePricingOptionInput,
+  FacetPricingOption,
   PublishActorCommand,
   PublishAgentFacetCommand,
 } from "./actor-agent-types.js";
@@ -21,8 +24,278 @@ export const DEMO_LOCAL_PAY_TO = "0x9265c1c87fC5fb3C72Dc68b4D3A005dE1E22C3cf";
 export const DEFAULT_ERC8004_REGISTRY =
   "0x8004A818BFB912233c491871b3d84c89A494BD9e";
 export const AVALANCHE_FUJI_CHAIN_ID = 43113;
+export const DEFAULT_MAX_ITEMS_CAP = 20;
+export const DEFAULT_MAX_PAYMENT_ATOMIC = 10_000_000n;
 
 export const ACTOR_RUNNER_IMAGE = "facet/node-actor-runner:1.0";
+
+const POSITIVE_INT_REGEX = /^[1-9][0-9]*$/u;
+const EVM_ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/u;
+
+function buildPricingOption(params: {
+  model: PricingModel;
+  priceAtomic: string;
+  maxItemsCap?: number | undefined;
+  maxAmountAtomic?: string | undefined;
+  assetAddress?: string | undefined;
+  payTo: string;
+  isPrimary: boolean;
+}): FacetPricingOption {
+  if (params.model === "PAY_PER_RESULT") {
+    const cap = params.maxItemsCap ?? DEFAULT_MAX_ITEMS_CAP;
+    const computedMax = (BigInt(params.priceAtomic) * BigInt(cap)).toString();
+    return {
+      model: "PAY_PER_RESULT",
+      priceAtomic: params.priceAtomic,
+      maxItemsCap: cap,
+      maxAmountAtomic: params.maxAmountAtomic ?? computedMax,
+      assetAddress: params.assetAddress ?? FUSD_ADDRESS,
+      chainId: AVALANCHE_FUJI_CHAIN_ID,
+      payTo: params.payTo,
+      isPrimary: params.isPrimary,
+    };
+  }
+  return {
+    model: "PAY_PER_RUN",
+    priceAtomic: params.priceAtomic,
+    maxAmountAtomic: params.maxAmountAtomic ?? params.priceAtomic,
+    assetAddress: params.assetAddress ?? FUSD_ADDRESS,
+    chainId: AVALANCHE_FUJI_CHAIN_ID,
+    payTo: params.payTo,
+    isPrimary: params.isPrimary,
+  };
+}
+
+export function normalizeAndValidatePricingOptions(
+  input: {
+    pricingOptions?: CreatePricingOptionInput[] | undefined;
+    pricingModel?: PricingModel | undefined;
+    priceAtomic?: string | undefined;
+    maxItemsCap?: number | undefined;
+  },
+  payTo: string,
+  maxPaymentAtomic: bigint = DEFAULT_MAX_PAYMENT_ATOMIC,
+): { primary: FacetPricingOption; options: FacetPricingOption[] } {
+  let rawOptions: CreatePricingOptionInput[];
+  if (input.pricingOptions !== undefined) {
+    if (input.pricingOptions.length < 1 || input.pricingOptions.length > 2) {
+      throw new AppError(
+        "VALIDATION_FAILED",
+        "pricingOptions must contain 1 or 2 pricing options.",
+        400,
+      );
+    }
+    rawOptions = input.pricingOptions;
+  } else {
+    const model: PricingModel = input.pricingModel ?? "PAY_PER_RUN";
+    const priceAtomic = input.priceAtomic ?? "1000";
+    if (model === "PAY_PER_RUN" && input.maxItemsCap !== undefined) {
+      throw new AppError(
+        "VALIDATION_FAILED",
+        "maxItemsCap is only valid for PAY_PER_RESULT.",
+        400,
+      );
+    }
+    rawOptions = [
+      {
+        model,
+        priceAtomic,
+        ...(model === "PAY_PER_RESULT"
+          ? { maxItemsCap: input.maxItemsCap ?? DEFAULT_MAX_ITEMS_CAP }
+          : {}),
+        isPrimary: true,
+      },
+    ];
+  }
+
+  const seenModels = new Set<PricingModel>();
+  let explicitPrimaryCount = 0;
+  for (const option of rawOptions) {
+    if (seenModels.has(option.model)) {
+      throw new AppError(
+        "VALIDATION_FAILED",
+        `Duplicate pricing model '${option.model}' in pricingOptions.`,
+        400,
+      );
+    }
+    seenModels.add(option.model);
+    if (!POSITIVE_INT_REGEX.test(option.priceAtomic)) {
+      throw new AppError(
+        "VALIDATION_FAILED",
+        "priceAtomic must be a positive integer string.",
+        400,
+      );
+    }
+    if (option.model === "PAY_PER_RUN") {
+      if (option.maxItemsCap !== undefined) {
+        throw new AppError(
+          "VALIDATION_FAILED",
+          "maxItemsCap is only valid for PAY_PER_RESULT.",
+          400,
+        );
+      }
+    } else {
+      const cap = option.maxItemsCap ?? DEFAULT_MAX_ITEMS_CAP;
+      if (!Number.isInteger(cap) || cap < 1 || cap > 1000) {
+        throw new AppError(
+          "VALIDATION_FAILED",
+          "maxItemsCap must be an integer between 1 and 1000.",
+          400,
+        );
+      }
+    }
+    if (option.isPrimary === true) {
+      explicitPrimaryCount += 1;
+    }
+  }
+
+  if (explicitPrimaryCount > 1) {
+    throw new AppError(
+      "VALIDATION_FAILED",
+      "At most one pricing option may be marked isPrimary.",
+      400,
+    );
+  }
+
+  const primaryIndex =
+    explicitPrimaryCount === 1
+      ? rawOptions.findIndex((option) => option.isPrimary === true)
+      : Math.max(
+          0,
+          rawOptions.findIndex((option) => option.model === "PAY_PER_RUN"),
+        );
+
+  const options = rawOptions.map((option, index) => {
+    const built = buildPricingOption({
+      model: option.model,
+      priceAtomic: option.priceAtomic,
+      ...(option.model === "PAY_PER_RESULT"
+        ? { maxItemsCap: option.maxItemsCap ?? DEFAULT_MAX_ITEMS_CAP }
+        : {}),
+      payTo,
+      isPrimary: index === primaryIndex,
+    });
+    if (BigInt(built.maxAmountAtomic) > maxPaymentAtomic) {
+      throw new AppError(
+        "VALIDATION_FAILED",
+        `${built.model} maximum amount (${built.maxAmountAtomic}) exceeds max allowed (${maxPaymentAtomic.toString()}).`,
+        400,
+      );
+    }
+    return built;
+  });
+
+  const primary = options[primaryIndex]!;
+  return { primary, options };
+}
+
+export function hydratePricingOptions(input: {
+  pricingOptions?: unknown;
+  pricingModel?: string | null | undefined;
+  priceAtomic?: string | null | undefined;
+  maxItemsCap?: number | null | undefined;
+  payTo: string;
+}): { primary: FacetPricingOption; options: FacetPricingOption[] } {
+  const fallbackModel: PricingModel =
+    input.pricingModel === "PAY_PER_RESULT" ? "PAY_PER_RESULT" : "PAY_PER_RUN";
+  const fallbackCap =
+    typeof input.maxItemsCap === "number" &&
+    Number.isInteger(input.maxItemsCap) &&
+    input.maxItemsCap >= 1 &&
+    input.maxItemsCap <= 1000
+      ? input.maxItemsCap
+      : DEFAULT_MAX_ITEMS_CAP;
+
+  if (Array.isArray(input.pricingOptions) && input.pricingOptions.length > 0) {
+    const parsed: FacetPricingOption[] = [];
+    const seen = new Set<PricingModel>();
+    for (const raw of input.pricingOptions) {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+      const item = raw as Record<string, unknown>;
+      const model: PricingModel | null =
+        item.model === "PAY_PER_RUN" || item.model === "PAY_PER_RESULT"
+          ? item.model
+          : null;
+      if (!model || seen.has(model)) continue;
+      const priceAtomic =
+        typeof item.priceAtomic === "string" &&
+        POSITIVE_INT_REGEX.test(item.priceAtomic)
+          ? item.priceAtomic
+          : null;
+      if (!priceAtomic) continue;
+      seen.add(model);
+
+      const cap =
+        model === "PAY_PER_RESULT"
+          ? typeof item.maxItemsCap === "number" &&
+            Number.isInteger(item.maxItemsCap) &&
+            item.maxItemsCap >= 1 &&
+            item.maxItemsCap <= 1000
+            ? item.maxItemsCap
+            : fallbackCap
+          : undefined;
+
+      const maxAmountAtomic =
+        typeof item.maxAmountAtomic === "string" &&
+        POSITIVE_INT_REGEX.test(item.maxAmountAtomic)
+          ? item.maxAmountAtomic
+          : undefined;
+      const assetAddress =
+        typeof item.assetAddress === "string" &&
+        EVM_ADDRESS_REGEX.test(item.assetAddress)
+          ? item.assetAddress
+          : undefined;
+      const optionPayTo =
+        typeof item.payTo === "string" && EVM_ADDRESS_REGEX.test(item.payTo)
+          ? item.payTo
+          : input.payTo;
+
+      parsed.push(
+        buildPricingOption({
+          model,
+          priceAtomic,
+          maxItemsCap: cap,
+          maxAmountAtomic,
+          assetAddress,
+          payTo: optionPayTo,
+          isPrimary: item.isPrimary === true,
+        }),
+      );
+    }
+
+    if (parsed.length > 0) {
+      const primaryCount = parsed.filter((o) => o.isPrimary).length;
+      if (primaryCount !== 1) {
+        const chosenIndex =
+          primaryCount > 1
+            ? parsed.findIndex((o) => o.isPrimary)
+            : Math.max(
+                0,
+                parsed.findIndex((o) => o.model === fallbackModel),
+              );
+        for (let i = 0; i < parsed.length; i += 1) {
+          parsed[i]!.isPrimary = i === chosenIndex;
+        }
+      }
+      const primary = parsed.find((o) => o.isPrimary) ?? parsed[0]!;
+      return { primary, options: parsed };
+    }
+  }
+
+  const fallbackPrice =
+    typeof input.priceAtomic === "string" &&
+    POSITIVE_INT_REGEX.test(input.priceAtomic)
+      ? input.priceAtomic
+      : "1000";
+  const single = buildPricingOption({
+    model: fallbackModel,
+    priceAtomic: fallbackPrice,
+    maxItemsCap: fallbackModel === "PAY_PER_RESULT" ? fallbackCap : undefined,
+    payTo: input.payTo,
+    isPrimary: true,
+  });
+  return { primary: single, options: [single] };
+}
 
 export function computeActorImageDigest(code: string): string {
   const hash = createHash("sha256")
@@ -103,6 +376,7 @@ export class ActorAgentService {
     private readonly options: {
       environment: "local" | "preview" | "production";
       publicBaseUrl?: string;
+      maxPaymentAtomic?: bigint | string;
     } = { environment: "local" },
   ) {}
 
@@ -199,8 +473,17 @@ export class ActorAgentService {
       actor.walletAddress,
       command.payTo,
     );
-    const pricingModel = command.pricingModel ?? "PAY_PER_RUN";
-    const priceAtomic = command.priceAtomic ?? "1000";
+    const maxPaymentAtomic = BigInt(
+      this.options.maxPaymentAtomic ?? DEFAULT_MAX_PAYMENT_ATOMIC,
+    );
+    const { primary, options } = normalizeAndValidatePricingOptions(
+      command,
+      payTo,
+      maxPaymentAtomic,
+    );
+    const maxItemsCap =
+      options.find((option) => option.model === "PAY_PER_RESULT")
+        ?.maxItemsCap ?? null;
     const imageDigest = computeActorImageDigest(command.code);
     const pending = this.options.environment !== "local";
     const visibility = pending ? "PRIVATE" : "PUBLIC";
@@ -236,13 +519,8 @@ export class ActorAgentService {
         kind: "NONE" as const,
         configured: true,
       },
-      pricing: {
-        model: pricingModel,
-        priceAtomic,
-        assetAddress: FUSD_ADDRESS,
-        chainId: AVALANCHE_FUJI_CHAIN_ID,
-        payTo,
-      },
+      pricing: primary,
+      pricingOptions: options,
       actorConfig: {
         runtime: "node-22-esm",
         entrypoint: "run",
@@ -273,8 +551,10 @@ export class ActorAgentService {
           inputSchema: command.inputSchema,
           outputSchema: command.outputSchema ?? null,
           code: command.code,
-          pricingModel,
-          priceAtomic,
+          pricingModel: primary.model,
+          priceAtomic: primary.priceAtomic,
+          maxItemsCap,
+          pricingOptions: options,
           payTo,
         }),
       )
@@ -283,10 +563,20 @@ export class ActorAgentService {
     const record = await this.store.publishActor({
       actorUserId: actor.id,
       providerUsername: actor.username,
-      command: { ...command, version, pricingModel, priceAtomic },
+      command: {
+        ...command,
+        version,
+        pricingModel: primary.model,
+        priceAtomic: primary.priceAtomic,
+        ...(primary.maxItemsCap !== undefined
+          ? { maxItemsCap: primary.maxItemsCap }
+          : {}),
+      },
       manifest,
       contentHash,
       imageDigest,
+      pricingOptions: options,
+      maxItemsCap,
       payTo,
       registryVerified: false,
       pending,
@@ -359,8 +649,17 @@ export class ActorAgentService {
       actor.walletAddress,
       command.payTo,
     );
-    const pricingModel = command.pricingModel ?? "PAY_PER_RUN";
-    const priceAtomic = command.priceAtomic ?? "1000";
+    const maxPaymentAtomic = BigInt(
+      this.options.maxPaymentAtomic ?? DEFAULT_MAX_PAYMENT_ATOMIC,
+    );
+    const { primary, options } = normalizeAndValidatePricingOptions(
+      command,
+      payTo,
+      maxPaymentAtomic,
+    );
+    const maxItemsCap =
+      options.find((option) => option.model === "PAY_PER_RESULT")
+        ?.maxItemsCap ?? null;
     const erc8004Registry = command.erc8004Registry ?? DEFAULT_ERC8004_REGISTRY;
 
     const manifest = {
@@ -394,13 +693,8 @@ export class ActorAgentService {
         kind: "NONE" as const,
         configured: true,
       },
-      pricing: {
-        model: pricingModel,
-        priceAtomic,
-        assetAddress: FUSD_ADDRESS,
-        chainId: AVALANCHE_FUJI_CHAIN_ID,
-        payTo,
-      },
+      pricing: primary,
+      pricingOptions: options,
       agentConfig: {
         erc8004ChainId: AVALANCHE_FUJI_CHAIN_ID,
         erc8004Registry,
@@ -418,10 +712,20 @@ export class ActorAgentService {
     const record = await this.store.publishAgentFacet({
       actorUserId: actor.id,
       providerUsername: actor.username,
-      command: { ...command, version, pricingModel, priceAtomic },
+      command: {
+        ...command,
+        version,
+        pricingModel: primary.model,
+        priceAtomic: primary.priceAtomic,
+        ...(primary.maxItemsCap !== undefined
+          ? { maxItemsCap: primary.maxItemsCap }
+          : {}),
+      },
       manifest,
       contentHash,
       erc8004Registry,
+      pricingOptions: options,
+      maxItemsCap,
       payTo,
       registryVerified: false,
       requestId,

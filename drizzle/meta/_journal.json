@@ -113,6 +113,13 @@
       "when": 1795142000000,
       "tag": "0015_faucet_claims",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1795185200000,
+      "tag": "0016_multi_pricing_options",
+      "breakpoints": true
     }
   ]
 }
