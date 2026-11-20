@@ -1,10 +1,15 @@
+import type { FacetType, PricingModel } from "../identifiers.js";
+
 export interface ActorRegistrationJob {
   facetId: string;
   versionId: string;
-  imageDigest: string;
+  facetType: FacetType;
+  digest: string;
+  pricingModel: PricingModel;
   priceAtomic: string;
   payTo: string;
   schemaURI: string;
+  erc8004TokenId?: string | null | undefined;
   signedRaw: string | null;
   txHash: string | null;
 }
@@ -16,6 +21,7 @@ export interface OnChainActorRegistration {
   priceAtomic: string;
   payTo: string;
   schemaURI: string;
+  erc8004TokenId?: string;
   active: boolean;
 }
 
@@ -38,18 +44,47 @@ export interface ActorRegistrationChain {
   ): Promise<"confirmed" | "reverted" | "unknown">;
 }
 
-function matchesRegistration(
+export function toFacetTypeCode(facetType: FacetType): number {
+  if (facetType === "ACTOR") return 1;
+  if (facetType === "AGENT") return 2;
+  return 0;
+}
+
+export function toPricingModelCode(pricingModel: PricingModel): number {
+  return pricingModel === "PAY_PER_RESULT" ? 1 : 0;
+}
+
+export function toBytes32Digest(digest: string): `0x${string}` {
+  if (/^sha256:[a-f0-9]{64}$/iu.test(digest)) {
+    return `0x${digest.slice(7).toLowerCase()}` as `0x${string}`;
+  }
+  if (/^0x[a-f0-9]{64}$/iu.test(digest)) {
+    return digest.toLowerCase() as `0x${string}`;
+  }
+  throw new Error(`Invalid bytes32 digest: ${digest}`);
+}
+
+export function matchesRegistration(
   job: ActorRegistrationJob,
   observed: OnChainActorRegistration,
 ): boolean {
+  let expectedDigest: string;
+  try {
+    expectedDigest = toBytes32Digest(job.digest);
+  } catch {
+    return false;
+  }
+
   return (
-    observed.facetType === 1 &&
-    observed.imageDigest.toLowerCase() ===
-      job.imageDigest.replace(/^sha256:/u, "0x").toLowerCase() &&
-    observed.pricingModel === 0 &&
+    observed.facetType === toFacetTypeCode(job.facetType) &&
+    observed.imageDigest.toLowerCase() === expectedDigest.toLowerCase() &&
+    observed.pricingModel === toPricingModelCode(job.pricingModel) &&
     observed.priceAtomic === job.priceAtomic &&
     observed.payTo.toLowerCase() === job.payTo.toLowerCase() &&
     observed.schemaURI === job.schemaURI &&
+    (job.facetType !== "AGENT" ||
+      observed.erc8004TokenId === undefined ||
+      observed.erc8004TokenId === (job.erc8004TokenId ?? "0")) &&
     observed.active
   );
 }

@@ -1,24 +1,9 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance } from "fastify";
 import type { Pool } from "pg";
-import { z } from "zod";
 
 import type { IdentityAuthenticator } from "../auth/types.js";
 import { AppError } from "../errors.js";
-import {
-  FACET_NAME_REGEX,
-  SEMVER_REGEX,
-  USERNAME_REGEX,
-} from "../identifiers.js";
 import type { ProviderStore } from "../providers/provider-types.js";
-
-const requestSchema = z
-  .object({
-    provider: z.string().regex(USERNAME_REGEX),
-    facetName: z.string().regex(FACET_NAME_REGEX),
-    version: z.string().regex(SEMVER_REGEX),
-    idempotencyKey: z.string().min(1).max(128),
-  })
-  .strict();
 
 export interface DemoPayerTarget {
   provider: string;
@@ -150,23 +135,12 @@ export async function registerDemoPayerRoutes(
     allowance: DemoPayerAllowance;
   },
 ): Promise<void> {
-  app.post("/v1/demo-payer/authorize", async (request: FastifyRequest) => {
-    const identity = await dependencies.authenticator.authenticate({
-      ...(request.headers.authorization
-        ? { authorization: request.headers.authorization }
-        : {}),
-      ...(typeof request.headers["x-facet-dev-user"] === "string"
-        ? { devUser: request.headers["x-facet-dev-user"] }
-        : {}),
-    });
-    const { provider, facetName, version, idempotencyKey } =
-      requestSchema.parse(request.body);
-    const user = await dependencies.providers.upsertUser(identity);
-    return dependencies.allowance.authorize(
-      user.id,
-      { provider, facetName, version },
-      idempotencyKey,
-      new Date(),
+  void dependencies;
+  app.post("/v1/demo-payer/authorize", async () => {
+    throw new AppError(
+      "DEMO_PAYER_RETIRED",
+      "Server-sponsored browser demo payments have been retired. Sign directly with your Avalanche wallet.",
+      410,
     );
   });
 }

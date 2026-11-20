@@ -18,6 +18,15 @@ const actorParamsSchema = z
   })
   .strict();
 
+const pricingOptionInputSchema = z
+  .object({
+    model: z.enum(PRICING_MODELS),
+    priceAtomic: z.string().regex(/^[1-9][0-9]*$/u),
+    maxItemsCap: z.number().int().min(1).max(1000).optional(),
+    isPrimary: z.boolean().optional(),
+  })
+  .strict();
+
 const createActorBodySchema = z
   .object({
     facetName: z.string().regex(FACET_NAME_REGEX),
@@ -29,12 +38,14 @@ const createActorBodySchema = z
     tags: z.array(z.string().min(1).max(40)).max(20).optional(),
     inputSchema: z.record(z.string(), z.unknown()),
     outputSchema: z.record(z.string(), z.unknown()).optional(),
-    code: z.string().min(1).max(65_536),
+    code: z.string().min(10).max(131_072),
     pricingModel: z.enum(PRICING_MODELS).optional(),
     priceAtomic: z
       .string()
-      .regex(/^[0-9]+$/u)
+      .regex(/^[1-9][0-9]*$/u)
       .optional(),
+    maxItemsCap: z.number().int().min(1).max(1000).optional(),
+    pricingOptions: z.array(pricingOptionInputSchema).min(1).max(2).optional(),
     payTo: z
       .string()
       .regex(/^0x[a-fA-F0-9]{40}$/u)
@@ -66,8 +77,10 @@ const createAgentFacetBodySchema = z
     pricingModel: z.enum(PRICING_MODELS).optional(),
     priceAtomic: z
       .string()
-      .regex(/^[0-9]+$/u)
+      .regex(/^[1-9][0-9]*$/u)
       .optional(),
+    maxItemsCap: z.number().int().min(1).max(1000).optional(),
+    pricingOptions: z.array(pricingOptionInputSchema).min(1).max(2).optional(),
     payTo: z
       .string()
       .regex(/^0x[a-fA-F0-9]{40}$/u)

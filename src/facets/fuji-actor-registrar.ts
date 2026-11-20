@@ -13,10 +13,13 @@ import {
 import { avalancheFuji } from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
 
-import type {
-  ActorRegistrationChain,
-  ActorRegistrationJob,
-  OnChainActorRegistration,
+import {
+  toBytes32Digest,
+  toFacetTypeCode,
+  toPricingModelCode,
+  type ActorRegistrationChain,
+  type ActorRegistrationJob,
+  type OnChainActorRegistration,
 } from "./actor-registration-worker.js";
 import { uuidToFacetKey } from "./fuji-registry-verifier.js";
 
@@ -77,6 +80,7 @@ export class FujiActorRegistrar implements ActorRegistrationChain {
         priceAtomic: record.priceAtomic.toString(),
         payTo: record.payTo,
         schemaURI: record.schemaURI,
+        erc8004TokenId: record.erc8004TokenId.toString(),
         active: record.active,
       };
     } catch (error) {
@@ -99,13 +103,16 @@ export class FujiActorRegistrar implements ActorRegistrationChain {
       args: [
         uuidToFacetKey(job.versionId),
         {
-          facetType: 1,
-          imageDigest: job.imageDigest.replace(/^sha256:/u, "0x") as Hex,
+          facetType: toFacetTypeCode(job.facetType),
+          imageDigest: toBytes32Digest(job.digest),
           schemaURI: job.schemaURI,
-          pricingModel: 0,
+          pricingModel: toPricingModelCode(job.pricingModel),
           priceAtomic: BigInt(job.priceAtomic),
           payTo: job.payTo as Address,
-          erc8004TokenId: 0n,
+          erc8004TokenId:
+            job.erc8004TokenId && job.erc8004TokenId.length > 0
+              ? BigInt(job.erc8004TokenId)
+              : 0n,
           active: true,
         },
       ],
