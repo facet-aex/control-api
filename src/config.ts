@@ -144,6 +144,14 @@ const environmentSchema = z.object({
     z.coerce.number().int().min(1).max(1_000).default(10),
   ),
   FACET_FAUCET_IP_HASH_SALT: optionalNonEmptyString,
+  FACET_MAX_PAYMENT_ATOMIC: z.preprocess(
+    (value) =>
+      typeof value === "string" && value.trim() === "" ? undefined : value,
+    z
+      .string()
+      .regex(/^[1-9][0-9]*$/u)
+      .default("10000000"),
+  ),
 });
 
 export type AppConfig = z.infer<typeof environmentSchema>;

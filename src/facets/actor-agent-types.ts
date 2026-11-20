@@ -11,6 +11,24 @@ export type MyFacetStatus =
   | "VALID"
   | "DISABLED";
 
+export interface CreatePricingOptionInput {
+  model: PricingModel;
+  priceAtomic: string;
+  maxItemsCap?: number | undefined;
+  isPrimary?: boolean | undefined;
+}
+
+export interface FacetPricingOption {
+  model: PricingModel;
+  priceAtomic: string;
+  maxItemsCap?: number;
+  maxAmountAtomic: string;
+  assetAddress: string;
+  chainId: 43113;
+  payTo: string;
+  isPrimary: boolean;
+}
+
 export interface PublishActorCommand {
   facetName: string;
   facetDisplayName: string;
@@ -24,6 +42,8 @@ export interface PublishActorCommand {
   code: string;
   pricingModel?: PricingModel | undefined;
   priceAtomic?: string | undefined;
+  maxItemsCap?: number | undefined;
+  pricingOptions?: CreatePricingOptionInput[] | undefined;
   payTo?: string | undefined;
   registryTxHash?: string | undefined;
 }
@@ -43,6 +63,8 @@ export interface PublishAgentFacetCommand {
   taskKind: string;
   pricingModel?: PricingModel | undefined;
   priceAtomic?: string | undefined;
+  maxItemsCap?: number | undefined;
+  pricingOptions?: CreatePricingOptionInput[] | undefined;
   payTo?: string | undefined;
   registryTxHash?: string | undefined;
 }
@@ -80,6 +102,7 @@ export interface MyFacetSummary {
   status: MyFacetStatus;
   pricingModel: PricingModel;
   priceAtomic: string;
+  pricingOptions?: FacetPricingOption[];
   registryVerified: boolean;
   registryTxHash: string | null;
   errorCode: string | null;
@@ -137,6 +160,8 @@ export interface ActorAgentStore {
     manifest: Record<string, unknown>;
     contentHash: string;
     imageDigest: string;
+    pricingOptions?: FacetPricingOption[] | undefined;
+    maxItemsCap?: number | null | undefined;
     payTo: string;
     registryVerified: boolean;
     pending?: boolean;
@@ -152,6 +177,8 @@ export interface ActorAgentStore {
     manifest: Record<string, unknown>;
     contentHash: string;
     erc8004Registry: string;
+    pricingOptions?: FacetPricingOption[] | undefined;
+    maxItemsCap?: number | null | undefined;
     payTo: string;
     registryVerified: boolean;
     requestId: string;

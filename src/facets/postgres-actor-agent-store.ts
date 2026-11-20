@@ -13,7 +13,11 @@ import {
   users,
 } from "../db/schema.js";
 import { AppError } from "../errors.js";
-import type { FacetType, PricingModel } from "../identifiers.js";
+import type { FacetType } from "../identifiers.js";
+import {
+  DEMO_LOCAL_PAY_TO,
+  hydratePricingOptions,
+} from "./actor-agent-service.js";
 import type {
   ActorAgentStore,
   ActorPublishStatus,
@@ -27,13 +31,18 @@ import type {
 import { hashFacetManifest } from "./facet-manifest.js";
 
 type Db = Database["db"];
-type ActorJobStatus = "pending" | "submitted" | "confirmed" | "failed" | null;
+export type ActorJobStatus =
+  "pending" | "submitted" | "confirmed" | "published" | "failed" | null;
 
 function toActorPublishStatus(
   versionStatus: "draft" | "valid" | "published" | "disabled",
   jobStatus: ActorJobStatus,
 ): ActorPublishStatus {
-  if (versionStatus === "published" || jobStatus === "confirmed") {
+  if (
+    versionStatus === "published" ||
+    jobStatus === "confirmed" ||
+    jobStatus === "published"
+  ) {
     return "PUBLISHED";
   }
   if (jobStatus === "failed" || versionStatus === "disabled") {
@@ -42,26 +51,28 @@ function toActorPublishStatus(
   return "REGISTRATION_PENDING";
 }
 
-function toMyFacetStatus(
+export function toMyFacetStatus(
   facetType: FacetType,
   versionStatus: "draft" | "valid" | "published" | "disabled",
   jobStatus: ActorJobStatus,
 ): MyFacetStatus {
-  if (facetType === "ACTOR") {
-    if (versionStatus === "published" || jobStatus === "confirmed") {
-      return "PUBLISHED";
-    }
-    if (jobStatus === "failed") {
-      return "FAILED";
-    }
-    if (versionStatus === "disabled") {
-      return "DISABLED";
-    }
+  if (
+    versionStatus === "published" ||
+    jobStatus === "confirmed" ||
+    jobStatus === "published"
+  ) {
+    return "PUBLISHED";
+  }
+  if (jobStatus === "failed") {
+    return "FAILED";
+  }
+  if (versionStatus === "disabled") {
+    return "DISABLED";
+  }
+  if (jobStatus !== null || facetType === "ACTOR") {
     return "REGISTRATION_PENDING";
   }
-  if (versionStatus === "published") return "PUBLISHED";
   if (versionStatus === "valid") return "VALID";
-  if (versionStatus === "disabled") return "DISABLED";
   return "DRAFT";
 }
 
@@ -127,6 +138,7 @@ export class PostgresActorAgentStore implements ActorAgentStore {
     const rows = await this.db
       .select({
         provider: users.username,
+        walletAddress: users.walletAddress,
         facetName: facets.facetName,
         facetDisplayName: facets.facetDisplayName,
         facetType: facets.type,
@@ -136,6 +148,9 @@ export class PostgresActorAgentStore implements ActorAgentStore {
         versionStatus: facetVersions.status,
         pricingModel: facetVersions.pricingModel,
         priceAtomic: facetVersions.priceAtomic,
+        pricingOptions: facetVersions.pricingOptions,
+        maxItemsCap: facetVersions.maxItemsCap,
+        payTo: facetVersions.payTo,
         registryVerified: facetVersions.registryVerified,
         versionTxHash: facetVersions.registryTxHash,
         jobStatus: actorRegistrationJobs.status,
@@ -154,31 +169,38 @@ export class PostgresActorAgentStore implements ActorAgentStore {
       .where(eq(facets.providerId, userId))
       .orderBy(desc(facetVersions.createdAt));
 
-    return rows.map((row) => ({
-      provider: row.provider,
-      facetName: row.facetName,
-      facetDisplayName: row.facetDisplayName,
-      facetType: row.facetType,
-      version: row.version,
-      category: row.category,
-      visibility: row.visibility.toUpperCase() as
-        "PRIVATE" | "PUBLIC" | "UNLISTED",
-      status: toMyFacetStatus(
-        row.facetType,
-        row.versionStatus,
-        (row.jobStatus ?? null) as ActorJobStatus,
-      ),
-      pricingModel:
-        row.pricingModel === "PAY_PER_RESULT"
-          ? "PAY_PER_RESULT"
-          : ("PAY_PER_RUN" as PricingModel),
-      priceAtomic: row.priceAtomic,
-      registryVerified: row.registryVerified,
-      registryTxHash: row.versionTxHash ?? row.jobTxHash ?? null,
-      errorCode: row.errorCode ?? null,
-      createdAt: row.createdAt.toISOString(),
-      publishedAt: row.publishedAt ? row.publishedAt.toISOString() : null,
-    }));
+    return rows.map((row) => {
+      const hydrated = hydratePricingOptions({
+        pricingOptions: row.pricingOptions,
+        pricingModel: row.pricingModel,
+        priceAtomic: row.priceAtomic,
+        maxItemsCap: row.maxItemsCap,
+        payTo: row.payTo ?? row.walletAddress ?? DEMO_LOCAL_PAY_TO,
+      });
+      return {
+        provider: row.provider,
+        facetName: row.facetName,
+        facetDisplayName: row.facetDisplayName,
+        facetType: row.facetType,
+        version: row.version,
+        category: row.category,
+        visibility: row.visibility.toUpperCase() as
+          "PRIVATE" | "PUBLIC" | "UNLISTED",
+        status: toMyFacetStatus(
+          row.facetType,
+          row.versionStatus,
+          (row.jobStatus ?? null) as ActorJobStatus,
+        ),
+        pricingModel: hydrated.primary.model,
+        priceAtomic: hydrated.primary.priceAtomic,
+        pricingOptions: hydrated.options,
+        registryVerified: row.registryVerified,
+        registryTxHash: row.versionTxHash ?? row.jobTxHash ?? null,
+        errorCode: row.errorCode ?? null,
+        createdAt: row.createdAt.toISOString(),
+        publishedAt: row.publishedAt ? row.publishedAt.toISOString() : null,
+      };
+    });
   }
 
   async getActorPublishStatus(
@@ -410,6 +432,25 @@ export class PostgresActorAgentStore implements ActorAgentStore {
         });
       }
 
+      const actorPricing = input.pricingOptions
+        ? {
+            primary:
+              input.pricingOptions.find((o) => o.isPrimary) ??
+              input.pricingOptions[0]!,
+            options: input.pricingOptions,
+          }
+        : hydratePricingOptions({
+            pricingModel: input.command.pricingModel,
+            priceAtomic: input.command.priceAtomic,
+            maxItemsCap: input.command.maxItemsCap,
+            payTo: input.payTo,
+          });
+      const actorMaxItemsCap =
+        input.maxItemsCap !== undefined
+          ? input.maxItemsCap
+          : (actorPricing.options.find((o) => o.model === "PAY_PER_RESULT")
+              ?.maxItemsCap ?? null);
+
       await transaction.insert(facetVersions).values({
         id: versionId,
         facetId,
@@ -424,9 +465,11 @@ export class PostgresActorAgentStore implements ActorAgentStore {
         outputSchema: input.command.outputSchema ?? { type: "object" },
         actorCode: input.command.code,
         imageDigest: input.imageDigest,
-        pricingModel: input.command.pricingModel ?? "PAY_PER_RUN",
-        priceAtomic: input.command.priceAtomic ?? "1000",
+        pricingModel: actorPricing.primary.model,
+        priceAtomic: actorPricing.primary.priceAtomic,
         payTo: input.payTo,
+        pricingOptions: actorPricing.options,
+        maxItemsCap: actorMaxItemsCap,
         registryVerified: input.registryVerified,
         createdBy: input.actorUserId,
         revision: 1,
@@ -614,6 +657,25 @@ export class PostgresActorAgentStore implements ActorAgentStore {
         });
       }
 
+      const agentPricing = input.pricingOptions
+        ? {
+            primary:
+              input.pricingOptions.find((o) => o.isPrimary) ??
+              input.pricingOptions[0]!,
+            options: input.pricingOptions,
+          }
+        : hydratePricingOptions({
+            pricingModel: input.command.pricingModel,
+            priceAtomic: input.command.priceAtomic,
+            maxItemsCap: input.command.maxItemsCap,
+            payTo: input.payTo,
+          });
+      const agentMaxItemsCap =
+        input.maxItemsCap !== undefined
+          ? input.maxItemsCap
+          : (agentPricing.options.find((o) => o.model === "PAY_PER_RESULT")
+              ?.maxItemsCap ?? null);
+
       await transaction.insert(facetVersions).values({
         id: versionId,
         facetId,
@@ -626,9 +688,11 @@ export class PostgresActorAgentStore implements ActorAgentStore {
         operation: manifest.operation,
         inputSchema: input.command.inputSchema,
         outputSchema: input.command.outputSchema ?? { type: "object" },
-        pricingModel: input.command.pricingModel ?? "PAY_PER_RUN",
-        priceAtomic: input.command.priceAtomic ?? "1000",
+        pricingModel: agentPricing.primary.model,
+        priceAtomic: agentPricing.primary.priceAtomic,
         payTo: input.payTo,
+        pricingOptions: agentPricing.options,
+        maxItemsCap: agentMaxItemsCap,
         erc8004TokenId: input.command.erc8004TokenId,
         erc8004Registry: input.erc8004Registry,
         agentTaskKind: input.command.taskKind,

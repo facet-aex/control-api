@@ -9,7 +9,9 @@ import { uuidToFacetKey } from "../src/facets/fuji-registry-verifier.js";
 const job: ActorRegistrationJob = {
   facetId: "00000000-0000-4000-8000-000000000001",
   versionId: "00000000-0000-4000-8000-000000000002",
-  imageDigest: `sha256:${"a".repeat(64)}`,
+  facetType: "ACTOR",
+  digest: `sha256:${"a".repeat(64)}`,
+  pricingModel: "PAY_PER_RUN",
   priceAtomic: "1000",
   payTo: "0x0000000000000000000000000000000000000001",
   schemaURI:

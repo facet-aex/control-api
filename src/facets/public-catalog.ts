@@ -6,14 +6,56 @@ import {
   AVALANCHE_FUJI_CHAIN_ID,
   DEFAULT_ERC8004_REGISTRY,
   DEMO_LOCAL_PAY_TO,
-  FUSD_ADDRESS,
+  hydratePricingOptions,
 } from "./actor-agent-service.js";
+import type { FacetPricingOption } from "./actor-agent-types.js";
 import {
   ALL_NAMED_CATEGORY_SLUGS,
   NAMED_CATEGORY_SLUGS_BY_TYPE,
 } from "./categories.js";
 
-export type { FacetType, PricingModel };
+export type { FacetPricingOption, FacetType, PricingModel };
+
+export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+
+export interface ApiMeta {
+  method: HttpMethod;
+  pathTemplate: string;
+  datasetPath?: string;
+  staticHeaderNames?: string[];
+  registryTxHash?: string;
+  registryVerified?: boolean;
+}
+
+export interface PublicCatalogRow {
+  facet: {
+    type: FacetType;
+    facetName: string;
+    facetDisplayName: string;
+    description: string;
+    category: string;
+    tags: string[];
+  };
+  version: {
+    version: string;
+    manifest: unknown;
+    imageDigest: string | null;
+    pricingModel: string;
+    priceAtomic: string;
+    pricingOptions?: unknown;
+    maxItemsCap?: number | null;
+    payTo: string | null;
+    erc8004Registry: string | null;
+    erc8004TokenId: string | null;
+    registryVerified: boolean;
+    registryTxHash: string | null;
+    publishedAt: Date | null;
+  };
+  user: {
+    username: string;
+    walletAddress: string | null;
+  };
+}
 
 export interface PublicFacet {
   provider: string;
@@ -28,13 +70,9 @@ export interface PublicFacet {
   method: string;
   inputSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
-  pricing: {
-    model: PricingModel;
-    priceAtomic: string;
-    assetAddress: string;
-    chainId: 43113;
-    payTo: string;
-  };
+  pricing: FacetPricingOption;
+  pricingOptions: FacetPricingOption[];
+  apiMeta?: ApiMeta;
   actorMeta?: {
     runtime: string;
     imageDigest: string;
@@ -203,16 +241,18 @@ export class PostgresPublicCatalog implements PublicCatalog {
     return and(...conditions);
   }
 
-  private map(
-    row: Awaited<
-      ReturnType<ReturnType<PostgresPublicCatalog["baseLatest"]>["limit"]>
-    >[number],
-  ): PublicFacet {
+  map(row: PublicCatalogRow): PublicFacet {
     const manifest = (row.version.manifest ?? {}) as {
+      summary?: unknown;
       operation?: {
         method?: string;
+        publicPathTemplate?: string;
         inputSchema?: Record<string, unknown>;
         outputSchema?: Record<string, unknown>;
+      };
+      apiConfig?: {
+        datasetPath?: unknown;
+        staticHeaderNames?: unknown;
       };
       actorConfig?: {
         runtime?: string;
@@ -222,12 +262,43 @@ export class PostgresPublicCatalog implements PublicCatalog {
       };
     };
     const mappedType: FacetType = row.facet.type;
-    const pricingModel: PricingModel =
-      row.version.pricingModel === "PAY_PER_RESULT"
-        ? "PAY_PER_RESULT"
-        : "PAY_PER_RUN";
     const payTo =
       row.version.payTo ?? row.user.walletAddress ?? DEMO_LOCAL_PAY_TO;
+    const { primary, options } = hydratePricingOptions({
+      pricingOptions: row.version.pricingOptions,
+      pricingModel: row.version.pricingModel,
+      priceAtomic: row.version.priceAtomic,
+      maxItemsCap: row.version.maxItemsCap,
+      payTo,
+    });
+
+    const rawMethod = manifest.operation?.method?.toUpperCase();
+    const apiMethod: HttpMethod =
+      rawMethod === "POST" ||
+      rawMethod === "PUT" ||
+      rawMethod === "PATCH" ||
+      rawMethod === "DELETE"
+        ? rawMethod
+        : "GET";
+    const rawPathTemplate = manifest.operation?.publicPathTemplate;
+    const pathTemplate =
+      typeof rawPathTemplate === "string" && rawPathTemplate.length > 0
+        ? rawPathTemplate.startsWith("/")
+          ? rawPathTemplate
+          : `/${rawPathTemplate}`
+        : "/";
+    const datasetPath =
+      typeof manifest.apiConfig?.datasetPath === "string" &&
+      manifest.apiConfig.datasetPath.length > 0
+        ? manifest.apiConfig.datasetPath
+        : undefined;
+    const staticHeaderNames = Array.isArray(
+      manifest.apiConfig?.staticHeaderNames,
+    )
+      ? manifest.apiConfig.staticHeaderNames.filter(
+          (item): item is string => typeof item === "string" && item.length > 0,
+        )
+      : [];
 
     return {
       provider: row.user.username,
@@ -235,6 +306,9 @@ export class PostgresPublicCatalog implements PublicCatalog {
       facetDisplayName: row.facet.facetDisplayName,
       version: row.version.version,
       facetType: mappedType,
+      ...(typeof manifest.summary === "string" && manifest.summary.length > 0
+        ? { summary: manifest.summary.slice(0, 280) }
+        : {}),
       description: row.facet.description,
       category: row.facet.category,
       tags: row.facet.tags,
@@ -242,13 +316,22 @@ export class PostgresPublicCatalog implements PublicCatalog {
         manifest.operation?.method ?? (mappedType === "API" ? "GET" : "POST"),
       inputSchema: manifest.operation?.inputSchema ?? { type: "object" },
       outputSchema: manifest.operation?.outputSchema ?? { type: "object" },
-      pricing: {
-        model: pricingModel,
-        priceAtomic: row.version.priceAtomic,
-        assetAddress: FUSD_ADDRESS,
-        chainId: AVALANCHE_FUJI_CHAIN_ID,
-        payTo,
-      },
+      pricing: primary,
+      pricingOptions: options,
+      ...(mappedType === "API"
+        ? {
+            apiMeta: {
+              method: apiMethod,
+              pathTemplate,
+              ...(datasetPath ? { datasetPath } : {}),
+              ...(staticHeaderNames.length > 0 ? { staticHeaderNames } : {}),
+              registryVerified: row.version.registryVerified,
+              ...(row.version.registryTxHash
+                ? { registryTxHash: row.version.registryTxHash }
+                : {}),
+            },
+          }
+        : {}),
       ...(mappedType === "ACTOR" && row.version.imageDigest
         ? {
             actorMeta: {
@@ -279,7 +362,7 @@ export class PostgresPublicCatalog implements PublicCatalog {
             },
           }
         : {}),
-      publishedAt: row.version.publishedAt!.toISOString(),
+      publishedAt: (row.version.publishedAt ?? new Date(0)).toISOString(),
     };
   }
 

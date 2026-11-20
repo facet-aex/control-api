@@ -405,6 +405,10 @@ export const facetVersions = pgTable(
     pricingModel: text("pricing_model").notNull().default("PAY_PER_RUN"),
     priceAtomic: text("price_atomic").notNull().default("1000"),
     payTo: text("pay_to"),
+    pricingOptions: jsonb("pricing_options")
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    maxItemsCap: integer("max_items_cap"),
     erc8004TokenId: text("erc8004_token_id"),
     erc8004Registry: text("erc8004_registry"),
     agentTaskKind: text("agent_task_kind"),

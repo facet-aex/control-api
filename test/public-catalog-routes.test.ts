@@ -21,9 +21,27 @@ const facetV1: PublicFacet = {
   pricing: {
     model: "PAY_PER_RUN",
     priceAtomic: "1000",
+    maxAmountAtomic: "1000",
     assetAddress: "0xe7082a54a456dc4dfe0ceadcd0d0dce7d8ba176f",
     chainId: 43113,
     payTo: "0x9265c1c87fC5fb3C72Dc68b4D3A005dE1E22C3cf",
+    isPrimary: true,
+  },
+  pricingOptions: [
+    {
+      model: "PAY_PER_RUN",
+      priceAtomic: "1000",
+      maxAmountAtomic: "1000",
+      assetAddress: "0xe7082a54a456dc4dfe0ceadcd0d0dce7d8ba176f",
+      chainId: 43113,
+      payTo: "0x9265c1c87fC5fb3C72Dc68b4D3A005dE1E22C3cf",
+      isPrimary: true,
+    },
+  ],
+  apiMeta: {
+    method: "GET",
+    pathTemplate: "/weather",
+    registryVerified: false,
   },
   publishedAt: "2026-11-18T00:00:00.000Z",
 };
